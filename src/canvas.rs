@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Color, ColorRole, Dp, Dpi, NativeDrawCommand, NativeDrawFill, NativeDrawIconCommand,
-    NativeDrawPlan, NativeIconColorMode, Rect, SemanticTextStyle, WidgetId, ZsIcon,
-    ZsPointerButton, ZsPointerModifiers,
+    NativeDrawImageCommand, NativeDrawPlan, NativeIconColorMode, NativeImageInterpolation, Rect,
+    SemanticTextStyle, WidgetId, ZsIcon, ZsImageFrame, ZsPointerButton, ZsPointerModifiers,
 };
 
 /// Lifecycle phase for a Canvas pointer capture.
@@ -161,6 +161,13 @@ pub enum ZsCanvasPrimitive {
         color: Color,
         fallback: ColorRole,
     },
+    /// A bitmap such as a system file icon or a thumbnail. A frame whose
+    /// pixel size equals `rect` at the Canvas scale factor is drawn 1:1;
+    /// other sizes are resampled smoothly.
+    Image {
+        frame: ZsImageFrame,
+        rect: ZsCanvasRect,
+    },
 }
 
 impl ZsCanvasPrimitive {
@@ -240,6 +247,11 @@ impl ZsCanvasPrimitive {
             color,
             fallback,
         }
+    }
+
+    /// A bitmap drawn into `rect`.
+    pub fn image(frame: ZsImageFrame, rect: ZsCanvasRect) -> Self {
+        Self::Image { frame, rect }
     }
 }
 
@@ -418,6 +430,12 @@ impl<'a> ZsCanvasLayoutContext<'a> {
     /// height is zero and only the width is meaningful.
     pub fn size(&self) -> ZsCanvasSize {
         self.size
+    }
+
+    /// Physical pixels per DP. Multiply a rectangle by it to request a bitmap
+    /// that [`ZsCanvasPrimitive::Image`] draws without resampling.
+    pub fn scale_factor(&self) -> f32 {
+        self.dpi.scale_factor()
     }
 
     /// Measures `text` in local DP. `max_width` only applies to
@@ -632,6 +650,24 @@ fn canvas_primitive_to_native(
             .with_color(*fallback)
             .with_custom_color(*color),
         ),
+        ZsCanvasPrimitive::Image { frame, rect } => {
+            let bounds = canvas_rect_to_native(bounds, *rect, dpi);
+            let source = Rect {
+                x: 0,
+                y: 0,
+                width: i32::try_from(frame.width()).unwrap_or(i32::MAX),
+                height: i32::try_from(frame.height()).unwrap_or(i32::MAX),
+            };
+            let interpolation = if source.width == bounds.width && source.height == bounds.height {
+                NativeImageInterpolation::Nearest
+            } else {
+                NativeImageInterpolation::Smooth
+            };
+            NativeDrawCommand::Image(
+                NativeDrawImageCommand::new(frame.clone(), source, bounds)
+                    .interpolation(interpolation),
+            )
+        }
     }
 }
 
@@ -689,6 +725,61 @@ pub(crate) fn zs_canvas_pointer_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_images_draw_one_to_one_at_their_pixel_size() {
+        let frame = ZsImageFrame::from_rgba8(
+            crate::ZsImageFrameId::new(7),
+            32,
+            32,
+            vec![255; 32 * 32 * 4],
+        )
+        .expect("frame");
+        let scene = ZsCanvasScene::new()
+            .with(ZsCanvasPrimitive::image(
+                frame.clone(),
+                ZsCanvasRect::new(Dp::new(4.0), Dp::new(2.0), Dp::new(16.0), Dp::new(16.0)),
+            ))
+            .with(ZsCanvasPrimitive::image(
+                frame,
+                ZsCanvasRect::new(Dp::new(30.0), Dp::new(2.0), Dp::new(24.0), Dp::new(24.0)),
+            ));
+        let bounds = Rect {
+            x: 100,
+            y: 40,
+            width: 200,
+            height: 100,
+        };
+        let plan = zs_canvas_native_draw_plan(bounds, &scene, Dpi::new(192.0));
+        let images = plan
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                NativeDrawCommand::Image(image) => Some(image),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(images.len(), 2);
+        assert_eq!(
+            images[0].bounds,
+            Rect {
+                x: 108,
+                y: 44,
+                width: 32,
+                height: 32,
+            }
+        );
+        assert_eq!(images[0].source.width, 32);
+        assert_eq!(images[0].interpolation, NativeImageInterpolation::Nearest);
+        assert_eq!(images[1].bounds.width, 48);
+        assert_eq!(images[1].interpolation, NativeImageInterpolation::Smooth);
+        assert_eq!(
+            ZsCanvasLayoutContext::detached(ZsCanvasSize::new(Dp::new(1.0), Dp::new(1.0)))
+                .scale_factor(),
+            1.0
+        );
+    }
 
     #[test]
     fn canvas_translates_local_dp_and_balances_clip() {
