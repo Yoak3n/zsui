@@ -74,6 +74,46 @@ pub(crate) trait NativeTextShaper {
         None
     }
 
+    /// Measures text drawn with an explicit font size. Shapers that cannot
+    /// resize the resolved font scale the role-size measurement.
+    fn measure_sized(
+        &self,
+        text: &str,
+        style: crate::SemanticTextStyle,
+        font_size: Option<crate::ZsFontSize>,
+        max_width: i32,
+        dpi: Dpi,
+        typography_scale: f32,
+    ) -> Option<crate::Size> {
+        let Some(requested) = font_size
+            .map(crate::ZsFontSize::dip)
+            .filter(|size| *size > 0.0)
+        else {
+            return self.measure(text, style, max_width, dpi, typography_scale);
+        };
+        let role = style
+            .role
+            .metrics_for(crate::ZsTypographyPlatformStyle::current())
+            .size
+            * typography_scale.max(0.5);
+        if role <= 0.0 {
+            return self.measure(text, style, max_width, dpi, typography_scale);
+        }
+        let ratio = requested / role;
+        // Wrapping depends on the real glyph widths; measure at the scaled
+        // width so the line breaks match the requested size.
+        let scaled_width = if max_width > 0 {
+            ((max_width as f32) / ratio).round().max(1.0) as i32
+        } else {
+            max_width
+        };
+        self.measure(text, style, scaled_width, dpi, typography_scale)
+            .map(|size| crate::Size {
+                width: (size.width as f32 * ratio).ceil() as i32,
+                height: (size.height as f32 * ratio).ceil() as i32,
+            })
+    }
+
     fn shape_line(&self, text: &str) -> Option<NativeShapedTextLine>;
 }
 
@@ -153,26 +193,48 @@ impl NativeTextShapingBackend {
             let NativeDrawCommand::Text(command) = command else {
                 continue;
             };
+            let font_size = command.size.filter(|size| size.dip() > 0.0);
             if let Some(size) = previous
-                .measure(&command.text, command.style, 0)
-                .or_else(|| shaper.measure(&command.text, command.style, 0, dpi, typography_scale))
+                .measure_sized(&command.text, command.style, font_size, 0)
+                .or_else(|| {
+                    shaper.measure_sized(
+                        &command.text,
+                        command.style,
+                        font_size,
+                        0,
+                        dpi,
+                        typography_scale,
+                    )
+                })
             {
-                measurements.insert(&command.text, command.style, 0, size);
+                measurements.insert_sized(&command.text, command.style, font_size, 0, size);
             }
             if command.style.wrap == crate::TextWrap::Word && command.bounds.width > 0 {
                 if let Some(size) = previous
-                    .measure(&command.text, command.style, command.bounds.width)
+                    .measure_sized(
+                        &command.text,
+                        command.style,
+                        font_size,
+                        command.bounds.width,
+                    )
                     .or_else(|| {
-                        shaper.measure(
+                        shaper.measure_sized(
                             &command.text,
                             command.style,
+                            font_size,
                             command.bounds.width,
                             dpi,
                             typography_scale,
                         )
                     })
                 {
-                    measurements.insert(&command.text, command.style, command.bounds.width, size);
+                    measurements.insert_sized(
+                        &command.text,
+                        command.style,
+                        font_size,
+                        command.bounds.width,
+                        size,
+                    );
                 }
             }
         }

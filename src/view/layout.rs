@@ -1415,8 +1415,16 @@ fn cross_axis_length<Msg>(
         !vertical && matches!(&child.kind, ViewNodeKind::Text { .. });
     #[cfg(not(feature = "label"))]
     let text_stretches_width = false;
-    let stretches_cross_axis =
-        matches!(&child.kind, ViewNodeKind::Stack { .. }) || text_stretches_width;
+    // A Grid is a layout container like a stack: its tracks divide the cell it
+    // is given, so it owns the cross axis instead of collapsing to the
+    // intrinsic size of its widest cell.
+    #[cfg(feature = "grid")]
+    let grid_stretches = matches!(&child.kind, ViewNodeKind::Grid { .. });
+    #[cfg(not(feature = "grid"))]
+    let grid_stretches = false;
+    let stretches_cross_axis = matches!(&child.kind, ViewNodeKind::Stack { .. })
+        || text_stretches_width
+        || grid_stretches;
     fixed
         .map(|value| {
             typography_aware_length_px(
@@ -2197,6 +2205,8 @@ struct ViewTextMeasurementKey {
     text_fingerprint_b: u64,
     text_utf8_len: usize,
     style_fingerprint: u64,
+    /// Explicit font size in hundredths of a DIP; zero is the role's size.
+    font_size: u32,
     max_width: i32,
 }
 
@@ -2249,6 +2259,7 @@ impl PartialEq for ViewTextMeasurements {
 impl Eq for ViewTextMeasurements {}
 
 impl ViewTextMeasurements {
+    #[allow(dead_code)] // Used by text-input, workbench and tests.
     pub(crate) fn insert(
         &mut self,
         text: impl AsRef<str>,
@@ -2256,7 +2267,20 @@ impl ViewTextMeasurements {
         max_width: i32,
         size: crate::Size,
     ) {
-        let key = self.key(text.as_ref(), style, max_width);
+        self.insert_sized(text, style, None, max_width, size);
+    }
+
+    /// Records a measurement of text drawn at an explicit font size, as a
+    /// Canvas text run with `size` is drawn.
+    pub(crate) fn insert_sized(
+        &mut self,
+        text: impl AsRef<str>,
+        style: crate::SemanticTextStyle,
+        font_size: Option<crate::ZsFontSize>,
+        max_width: i32,
+        size: crate::Size,
+    ) {
+        let key = self.key(text.as_ref(), style, font_size, max_width);
         let size = size.clamp_non_negative();
         self.next_use = self.next_use.saturating_add(1);
         self.entries.insert(
@@ -2279,14 +2303,25 @@ impl ViewTextMeasurements {
         }
     }
 
+    #[allow(dead_code)] // Used by text inputs, workbench and tests.
     pub(crate) fn measure(
         &self,
         text: &str,
         style: crate::SemanticTextStyle,
         max_width: i32,
     ) -> Option<crate::Size> {
+        self.measure_sized(text, style, None, max_width)
+    }
+
+    pub(crate) fn measure_sized(
+        &self,
+        text: &str,
+        style: crate::SemanticTextStyle,
+        font_size: Option<crate::ZsFontSize>,
+        max_width: i32,
+    ) -> Option<crate::Size> {
         self.entries
-            .get(&self.key(text, style, max_width))
+            .get(&self.key(text, style, font_size, max_width))
             .map(|entry| entry.size)
     }
 
@@ -2294,6 +2329,7 @@ impl ViewTextMeasurements {
         &self,
         text: &str,
         style: crate::SemanticTextStyle,
+        font_size: Option<crate::ZsFontSize>,
         max_width: i32,
     ) -> ViewTextMeasurementKey {
         use std::hash::{BuildHasher, Hasher};
@@ -2307,6 +2343,7 @@ impl ViewTextMeasurements {
             text_fingerprint_b: fingerprint_b.finish(),
             text_utf8_len: text.len(),
             style_fingerprint: semantic_text_style_fingerprint(style),
+            font_size: font_size.map_or(0, |size| (size.dip() * 100.0).round() as u32),
             max_width: max_width.max(0),
         }
     }

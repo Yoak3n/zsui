@@ -310,6 +310,32 @@ history remain authoritative for implementation status.
 - `size-aware` canvases (`canvas_with`) rebuild their scene from final layout
   bounds and measure text through the shared native measurement cache; their
   declared extent is their natural height inside a Scroll.
+- Long custom-drawn lists stay virtual: a Canvas inside a Scroll reads
+  `ZsCanvasLayoutContext::visible_rect()` (the scroll viewport intersected with
+  its bounds) and emits primitives and hover regions for on-screen rows only.
+  Canvas scenes may clip with balanced `PushClip`/`PopClip` primitives, and
+  `measure_text_at` measures text at the same explicit size a `TextRun` draws.
+- A Canvas without click, pointer or hover handlers (and not a drag region) is
+  decoration and never becomes a hit target, so overlay layers stacked with
+  overlapping Grid cells let input reach the content beneath. A Grid owns the
+  cross axis of a stack like a nested stack does.
+- Media keys are ordinary `ZsAcceleratorKey` values; folder selection is
+  `FileDialogService::pick_folder` (Win32 `IFileOpenDialog`, Linux Direct
+  portal; other hosts report Unsupported until implemented).
+- Application-drawn title bars observe placement through
+  `ViewNode::on_window_state_change`: Win32 reports `ZsWindowState` from
+  `WM_SIZE` once per change, including system-initiated maximize and restore.
+  `ZsWindowCommand::Hide`/`Show` hide a window without closing it and bring
+  it back, for close-to-tray behavior through `on_close_requested`.
+- A View declares its notification-area icon with `ViewNode::status_item`
+  like it declares shortcuts: every rebuild may change the tooltip or menu,
+  menu items and `TraySpec::on_activate` reach the window's typed
+  application-command mapper, and a View without a declaration removes the
+  icon. Windows falls back to the executable's first icon resource for both
+  the tray and the window when no icon path is given.
+- `ViewNode::chromeless()` draws a text input without its field background,
+  border and focus indicator, so it can sit inside an application-drawn field;
+  text, placeholder, caret and selection remain.
 - Custom title bars are the opt-in `window-chrome` feature: the window keeps
   native resize, snap and taskbar behavior, the View marks caption areas with
   `window_drag_region()` (inside a drag-region Canvas only its hover regions are

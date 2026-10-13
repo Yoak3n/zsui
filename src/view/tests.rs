@@ -152,6 +152,8 @@ mod tests {
         CanvasClicked,
         #[cfg(feature = "canvas")]
         CanvasPointer(crate::ZsCanvasPointerEvent),
+        #[cfg(feature = "window-chrome")]
+        WindowState(crate::ZsWindowState),
         #[cfg(feature = "textbox")]
         NameChanged(String),
         #[cfg(feature = "textbox")]
@@ -6497,4 +6499,128 @@ fn active_progress_ring_reuses_native_progress_semantics_and_inactive_ring_is_hi
     ));
     assert!(inactive.interaction_plan().accessibility_nodes.is_empty());
 }
+
+    #[test]
+    #[cfg(all(feature = "canvas", feature = "scroll"))]
+    fn canvas_inside_scroll_sees_only_its_visible_part() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<crate::ZsCanvasRect>>> = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let mut view: ViewNode<Msg> = scroll(canvas_with(
+            move |cx: &crate::ZsCanvasLayoutContext<'_>| {
+                if cx.size().height.0 > 0.0 {
+                    record.lock().unwrap().push(cx.visible_rect());
+                }
+                crate::ZsCanvasScene::new().with_extent_height(Dp::new(1_000.0))
+            },
+        ))
+        .scroll_y(Dp::new(300.0));
+        view.layout(&mut ViewLayoutCx::new(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 100,
+            },
+            Dpi::standard(),
+        ));
+        let visible = *seen.lock().unwrap().last().expect("canvas was built");
+        assert_eq!(visible.y, Dp::new(300.0));
+        assert_eq!(visible.height, Dp::new(100.0));
+        assert_eq!(visible.width, Dp::new(200.0));
+
+        // Outside any scroll container the whole canvas is visible.
+        let detached = crate::ZsCanvasLayoutContext::detached(crate::ZsCanvasSize::new(
+            Dp::new(50.0),
+            Dp::new(80.0),
+        ));
+        assert_eq!(detached.visible_rect().height, Dp::new(80.0));
+    }
+
+    #[test]
+    #[cfg(all(feature = "canvas", feature = "grid"))]
+    fn decorative_canvas_layered_on_top_does_not_take_pointer_input() {
+        let below = WidgetId::new(41);
+        let mut view: ViewNode<Msg> = grid(
+            [ZsGridTrack::FLEX],
+            [ZsGridTrack::FLEX],
+            [
+                ZsGridCell::new(
+                    0,
+                    0,
+                    canvas(crate::ZsCanvasScene::new())
+                        .id(below)
+                        .on_canvas_pointer(Msg::CanvasPointer),
+                ),
+                // A full-size overlay without handlers, like a toast layer.
+                ZsGridCell::new(0, 0, canvas(crate::ZsCanvasScene::new())),
+            ],
+        );
+        view.layout(&mut ViewLayoutCx::new(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 100,
+            },
+            Dpi::standard(),
+        ));
+        let target = view
+            .interaction_plan()
+            .hit_target_at(Point { x: 50, y: 50 })
+            .expect("the interactive canvas below stays reachable");
+        assert_eq!(target.widget, below);
+    }
+
+    #[test]
+    #[cfg(all(feature = "canvas", feature = "grid"))]
+    fn grid_in_a_column_fills_the_cross_axis() {
+        let cell = WidgetId::new(42);
+        let mut view: ViewNode<Msg> = column([grid(
+            [ZsGridTrack::FLEX],
+            [ZsGridTrack::FLEX],
+            [ZsGridCell::new(
+                0,
+                0,
+                canvas(crate::ZsCanvasScene::new())
+                    .id(cell)
+                    .min_width(Dp::new(40.0))
+                    .on_canvas_pointer(Msg::CanvasPointer),
+            )],
+        )
+        .height(Dp::new(30.0))]);
+        view.layout(&mut ViewLayoutCx::new(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 300,
+                height: 100,
+            },
+            Dpi::standard(),
+        ));
+        let target = view
+            .interaction_plan()
+            .hit_target_for_widget(cell)
+            .expect("grid cell content is laid out");
+        assert_eq!(target.bounds.width, 300);
+    }
+
+    #[test]
+    #[cfg(all(feature = "window-chrome", feature = "canvas"))]
+    fn window_state_changes_reach_the_first_bound_handler() {
+        let mut view: ViewNode<Msg> = column([canvas(crate::ZsCanvasScene::new())
+            .on_window_state_change(Msg::WindowState)]);
+        let mut cx = ViewEventCx::new();
+        view.event(
+            &mut cx,
+            &ViewEvent::WindowStateChanged {
+                state: crate::ZsWindowState { maximized: true },
+            },
+        );
+        let messages = cx.into_messages();
+        assert!(matches!(
+            messages.as_slice(),
+            [Msg::WindowState(crate::ZsWindowState { maximized: true })]
+        ));
+    }
 }

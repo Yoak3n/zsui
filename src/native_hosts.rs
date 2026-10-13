@@ -336,6 +336,7 @@ pub struct NativeStatusItemRequest {
     pub tooltip: Option<String>,
     pub icon_path: Option<String>,
     pub menu: MenuSpec,
+    pub activate: Option<Command>,
 }
 
 impl NativeStatusItemRequest {
@@ -344,6 +345,7 @@ impl NativeStatusItemRequest {
             tooltip: spec.tooltip.clone(),
             icon_path: spec.icon_path.clone(),
             menu: spec.menu.clone(),
+            activate: spec.activate.clone(),
         }
     }
 
@@ -352,6 +354,7 @@ impl NativeStatusItemRequest {
             tooltip: self.tooltip,
             icon_path: self.icon_path,
             menu: self.menu,
+            activate: self.activate,
         }
     }
 }

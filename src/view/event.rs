@@ -203,6 +203,11 @@ pub enum ViewEvent {
     Shortcut {
         accelerator: crate::ZsAccelerator,
     },
+    /// The host window was maximized or restored.
+    #[cfg(feature = "window-chrome")]
+    WindowStateChanged {
+        state: crate::ZsWindowState,
+    },
     /// Enter in a text input that has an `on_submit` handler.
     #[cfg(feature = "textbox")]
     TextSubmitted {
@@ -1221,6 +1226,9 @@ pub struct ViewLayoutCx {
     pub dpi: Dpi,
     pub(crate) typography_scale_per_mille: u16,
     pub(crate) text_measurements: Arc<ViewTextMeasurements>,
+    /// The viewport of the nearest enclosing scroll container, intersected
+    /// with every outer viewport; `None` outside scroll containers.
+    pub(crate) clip: Option<Rect>,
     depth: usize,
 }
 
@@ -1232,6 +1240,7 @@ impl ViewLayoutCx {
             typography_scale_per_mille: crate::render_protocol::default_typography_scale_per_mille(
             ),
             text_measurements: Arc::new(ViewTextMeasurements::default()),
+            clip: None,
             depth: 0,
         }
     }
@@ -1242,8 +1251,18 @@ impl ViewLayoutCx {
             dpi: self.dpi,
             typography_scale_per_mille: self.typography_scale_per_mille,
             text_measurements: self.text_measurements.clone(),
+            clip: self.clip,
             depth: self.depth.saturating_add(1),
         }
+    }
+
+    /// Narrows the clip for children laid out inside a scroll viewport.
+    pub(crate) fn with_viewport_clip(mut self, viewport: Rect) -> Self {
+        self.clip = Some(match self.clip {
+            Some(clip) => intersect_rects(clip, viewport),
+            None => viewport,
+        });
+        self
     }
 
     pub(crate) const fn is_root(&self) -> bool {
@@ -1379,5 +1398,19 @@ impl AppCx {
 
     pub const fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+}
+
+/// Intersection of two rectangles; empty rectangles keep a zero extent.
+pub(crate) fn intersect_rects(a: Rect, b: Rect) -> Rect {
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = a.x.saturating_add(a.width).min(b.x.saturating_add(b.width));
+    let bottom = a.y.saturating_add(a.height).min(b.y.saturating_add(b.height));
+    Rect {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left).max(0),
+        height: bottom.saturating_sub(top).max(0),
     }
 }

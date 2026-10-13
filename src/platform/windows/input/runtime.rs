@@ -174,6 +174,23 @@ impl WindowsWin32ViewInputRoute {
         self.adapt_shared_report(report, WindowsSharedInputKind::Background)
     }
 
+    #[cfg(feature = "window-chrome")]
+    fn dispatch_window_state(&mut self, maximized: bool) -> WindowsWin32ViewInputDispatchReport {
+        if self.window_maximized == Some(maximized) {
+            return self.adapt_shared_report(
+                crate::native::NativeViewInputDispatchReport::default(),
+                WindowsSharedInputKind::Background,
+            );
+        }
+        self.window_maximized = Some(maximized);
+        let report = self
+            .shared_runtime
+            .dispatch_window_state(crate::ZsWindowState { maximized });
+        let mut report = self.adapt_shared_report(report, WindowsSharedInputKind::Background);
+        report.handled = true;
+        report
+    }
+
     fn refresh_invalidated_view(&mut self) -> WindowsWin32ViewInputDispatchReport {
         let report = self.shared_runtime.refresh_invalidated_view();
         self.adapt_shared_report(report, WindowsSharedInputKind::Background)

@@ -873,6 +873,16 @@ impl ClipboardService for NativeClipboardService {
 pub trait FileDialogService {
     fn open_file_dialog(&mut self, spec: &FileDialogSpec) -> ZsuiResult<Option<Vec<PathBuf>>>;
     fn save_file_dialog(&mut self, spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>>;
+
+    /// Asks the user for one existing directory. `spec.filters` and
+    /// `spec.allow_multiple` are ignored; `spec.current_path` selects the
+    /// initial folder. Cancelling returns `Ok(None)`.
+    fn pick_folder(&mut self, _spec: &FileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
+        Err(ZsuiError::unsupported(
+            "pick_folder",
+            "this file dialog service does not implement folder selection",
+        ))
+    }
 }
 
 pub trait NativeDialogService {
@@ -914,6 +924,10 @@ impl FileDialogService for NativeFileDialogService {
 
     fn save_file_dialog(&mut self, spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
         crate::desktop_runtime::save_file_dialog(spec)
+    }
+
+    fn pick_folder(&mut self, spec: &FileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
+        crate::desktop_runtime::pick_folder(spec)
     }
 }
 

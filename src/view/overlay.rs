@@ -223,6 +223,8 @@ impl<Msg> ViewNode<Msg> {
             (Some(_), ViewEvent::DismissPopupOverlays { .. }) => false,
             #[cfg(feature = "shortcuts")]
             (_, ViewEvent::Shortcut { .. }) => false,
+            #[cfg(feature = "window-chrome")]
+            (_, ViewEvent::WindowStateChanged { .. }) => false,
             (None, _) => false,
         }
     }
@@ -2356,6 +2358,22 @@ impl<Msg> ViewNode<Msg> {
         #[cfg(feature = "progress-ring")]
         {
             accepts_input &= !matches!(self.kind, ViewNodeKind::ProgressRing { .. });
+        }
+        // A Canvas without pointer, click or hover handlers is decoration: it
+        // must not swallow input meant for content beneath it, such as a
+        // toast layer stacked over a page with overlapping Grid cells.
+        #[cfg(feature = "canvas")]
+        if let ViewNodeKind::Canvas {
+            on_click,
+            on_pointer,
+            on_hover,
+            ..
+        } = &self.kind
+        {
+            let decorative = on_click.is_none() && on_pointer.is_none() && on_hover.is_none();
+            #[cfg(feature = "window-chrome")]
+            let decorative = decorative && !self.window_drag_region;
+            accepts_input &= !decorative;
         }
         if accepts_input {
             if let (Some(widget), Some(bounds)) = (self.id, self.bounds) {

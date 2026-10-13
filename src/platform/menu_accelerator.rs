@@ -44,6 +44,10 @@ fn gtk_key_name(key: ZsAcceleratorKey) -> String {
         ZsAcceleratorKey::PageUp => "Page_Up".to_string(),
         ZsAcceleratorKey::PageDown => "Page_Down".to_string(),
         ZsAcceleratorKey::Function(number) => format!("F{number}"),
+        ZsAcceleratorKey::MediaPlayPause => "XF86AudioPlay".to_string(),
+        ZsAcceleratorKey::MediaNextTrack => "XF86AudioNext".to_string(),
+        ZsAcceleratorKey::MediaPreviousTrack => "XF86AudioPrev".to_string(),
+        ZsAcceleratorKey::MediaStop => "XF86AudioStop".to_string(),
     }
 }
 
@@ -69,6 +73,12 @@ pub(crate) fn appkit_key_equivalent(accelerator: &ZsAccelerator) -> Option<Strin
             char::from_u32(0xf703 + u32::from(number))?.to_string()
         }
         ZsAcceleratorKey::Function(_) => return None,
+        // AppKit has no key equivalent for media keys; they reach the
+        // application through the system media session instead.
+        ZsAcceleratorKey::MediaPlayPause
+        | ZsAcceleratorKey::MediaNextTrack
+        | ZsAcceleratorKey::MediaPreviousTrack
+        | ZsAcceleratorKey::MediaStop => return None,
     };
     Some(value)
 }

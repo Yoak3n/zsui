@@ -17,4 +17,18 @@ pub enum ZsWindowCommand {
     /// Requests closing the window through the normal close path, so close
     /// requests can still be vetoed by the application.
     Close,
+    /// Hides the window without closing it, for example to keep running
+    /// from a notification-area icon.
+    Hide,
+    /// Shows, restores and activates the window.
+    Show,
+}
+
+/// The window placement an application-drawn title bar mirrors, for example
+/// to show a restore button instead of maximize. Reported through
+/// `ViewNode::on_window_state_change` whenever it changes, including
+/// changes made by the system (caption double-click, snap, keyboard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct ZsWindowState {
+    pub maximized: bool,
 }

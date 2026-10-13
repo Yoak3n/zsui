@@ -454,6 +454,45 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "window-chrome", feature = "canvas"))]
+    fn window_view_input_route_reports_placement_changes_once() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        #[derive(Clone)]
+        enum Msg {
+            Placement(crate::ZsWindowState),
+        }
+        // Counts updates: 1 = restored, 2 = maximized, per received message.
+        let seen = Arc::new(AtomicUsize::new(0));
+        let builder = crate::native_window("Win32 placement")
+            .size(320, 160)
+            .custom_title_bar(true)
+            .stateful_view(
+                seen.clone(),
+                |_| {
+                    crate::canvas(crate::ZsCanvasScene::new())
+                        .on_window_state_change(Msg::Placement)
+                },
+                |seen, message, _| match message {
+                    Msg::Placement(state) => {
+                        seen.fetch_add(if state.maximized { 10 } else { 1 }, Ordering::SeqCst);
+                    }
+                },
+            );
+        let runtime = builder
+            .native_live_view_runtime()
+            .expect("stateful view should own a live runtime")
+            .clone();
+        let mut route = WindowsWin32ViewInputRoute::from_live_view(runtime);
+        assert!(route.dispatch_window_state(true).handled);
+        assert!(!route.dispatch_window_state(true).handled, "same placement is ignored");
+        assert!(route.dispatch_window_state(false).handled);
+        assert_eq!(seen.load(Ordering::SeqCst), 11);
+    }
+
+    #[test]
     fn min_track_size_converts_the_requested_client_floor_to_outer_pixels() {
         let style = WS_OVERLAPPED
             | WS_CAPTION
@@ -4097,6 +4136,7 @@ mod tests {
             tooltip: Some("ZSUI".to_string()),
             icon: Some(9),
             menu: menu.clone(),
+            activate: Some(Command::ShowMainWindow),
         });
 
         assert_eq!(
@@ -4110,6 +4150,7 @@ mod tests {
                 tray_id: 41,
                 event_message: WM_RBUTTONUP,
                 menu,
+                activate: Some(Command::ShowMainWindow),
             })
         );
         assert!(windows_win32_status_item_callback_target(
@@ -4148,6 +4189,7 @@ mod tests {
             tooltip: Some("Restored".to_string()),
             icon: Some(27),
             menu: MenuSpec::new().item("Quit", Command::Quit),
+            activate: None,
         };
         let data = route.notify_data();
 

@@ -108,6 +108,10 @@ fn windows_accelerator_virtual_key(accelerator: &ZsAccelerator) -> ZsuiResult<u1
         ZsAcceleratorKey::PageUp => VK_PRIOR,
         ZsAcceleratorKey::PageDown => VK_NEXT,
         ZsAcceleratorKey::Function(number) => VK_F1 + u16::from(number) - 1,
+        ZsAcceleratorKey::MediaPlayPause => 0xB3,
+        ZsAcceleratorKey::MediaNextTrack => 0xB0,
+        ZsAcceleratorKey::MediaPreviousTrack => 0xB1,
+        ZsAcceleratorKey::MediaStop => 0xB2,
     };
     Ok(key)
 }

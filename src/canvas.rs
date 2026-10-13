@@ -168,6 +168,14 @@ pub enum ZsCanvasPrimitive {
         frame: ZsImageFrame,
         rect: ZsCanvasRect,
     },
+    /// Restricts the following primitives to `rect` (intersected with any
+    /// enclosing clip and the Canvas bounds) until the matching
+    /// [`ZsCanvasPrimitive::PopClip`], for example to reveal part of a line
+    /// of text. Unbalanced clips are closed at the end of the scene.
+    PushClip { rect: ZsCanvasRect },
+    /// Ends the innermost [`ZsCanvasPrimitive::PushClip`]; ignored when no
+    /// clip is open.
+    PopClip,
 }
 
 impl ZsCanvasPrimitive {
@@ -252,6 +260,16 @@ impl ZsCanvasPrimitive {
     /// A bitmap drawn into `rect`.
     pub fn image(frame: ZsImageFrame, rect: ZsCanvasRect) -> Self {
         Self::Image { frame, rect }
+    }
+
+    /// Starts clipping the following primitives to `rect`.
+    pub const fn push_clip(rect: ZsCanvasRect) -> Self {
+        Self::PushClip { rect }
+    }
+
+    /// Ends the innermost clip started with [`Self::push_clip`].
+    pub const fn pop_clip() -> Self {
+        Self::PopClip
     }
 }
 
@@ -398,6 +416,7 @@ pub struct ZsCanvasLayoutContext<'a> {
     dpi: Dpi,
     typography_scale: f32,
     measurements: Option<&'a crate::view::ViewTextMeasurements>,
+    visible: Option<ZsCanvasRect>,
 }
 
 impl<'a> ZsCanvasLayoutContext<'a> {
@@ -412,7 +431,13 @@ impl<'a> ZsCanvasLayoutContext<'a> {
             dpi,
             typography_scale,
             measurements,
+            visible: None,
         }
+    }
+
+    pub(crate) fn with_visible_rect(mut self, visible: Option<ZsCanvasRect>) -> Self {
+        self.visible = visible;
+        self
     }
 
     /// A context without native measurements, for previews and tests. Text
@@ -423,13 +448,44 @@ impl<'a> ZsCanvasLayoutContext<'a> {
             dpi: Dpi::standard(),
             typography_scale: 1.0,
             measurements: None,
+            visible: None,
         }
+    }
+
+    /// A detached context whose visible part is `visible`, for tests of
+    /// virtualized drawing.
+    pub fn detached_with_visible_rect(
+        size: ZsCanvasSize,
+        visible: ZsCanvasRect,
+    ) -> ZsCanvasLayoutContext<'static> {
+        Self::detached(size).with_visible_rect(Some(visible))
     }
 
     /// Final local size of the Canvas. During natural-height measurement the
     /// height is zero and only the width is meaningful.
     pub fn size(&self) -> ZsCanvasSize {
         self.size
+    }
+
+    /// The part of the Canvas that can be seen through its enclosing scroll
+    /// viewports, in local DP.
+    ///
+    /// A tall Canvas inside a Scroll uses it to emit primitives and hover
+    /// regions only for the rows that are on screen, so a list of thousands
+    /// of custom-drawn rows builds a scene the size of one screen. Layout
+    /// rebuilds the scene whenever the scroll offset changes. During
+    /// natural-height measurement (zero height) the whole Canvas is reported.
+    pub fn visible_rect(&self) -> ZsCanvasRect {
+        let whole = ZsCanvasRect::new(
+            Dp::new(0.0),
+            Dp::new(0.0),
+            self.size.width,
+            self.size.height,
+        );
+        if self.size.height.0 <= 0.0 {
+            return whole;
+        }
+        self.visible.unwrap_or(whole)
     }
 
     /// Physical pixels per DP. Multiply a rectangle by it to request a bitmap
@@ -446,32 +502,63 @@ impl<'a> ZsCanvasLayoutContext<'a> {
         style: SemanticTextStyle,
         max_width: Option<Dp>,
     ) -> ZsCanvasSize {
+        self.measure_text_at(text, style, None, max_width)
+    }
+
+    /// Measures `text` drawn at an explicit font `size` in DP, matching a
+    /// [`ZsCanvasPrimitive::TextRun`] with the same style, size and width.
+    /// `None` uses the style role's platform size like [`Self::measure_text`].
+    pub fn measure_text_at(
+        &self,
+        text: &str,
+        style: SemanticTextStyle,
+        size: Option<Dp>,
+        max_width: Option<Dp>,
+    ) -> ZsCanvasSize {
         let max_px = max_width
             .filter(|_| style.wrap == crate::TextWrap::Word)
             .map(|width| canvas_non_negative_px(width, self.dpi))
             .unwrap_or(0);
-        if let Some(size) = self
+        let font_size = size
+            .filter(|size| size.0.is_finite() && size.0 > 0.0)
+            .map(|size| crate::ZsFontSize::from_dip(size.0));
+        if let Some(measured) = self
             .measurements
-            .and_then(|measurements| measurements.measure(text, style, max_px))
+            .and_then(|measurements| measurements.measure_sized(text, style, font_size, max_px))
         {
             let scale = self.dpi.scale_factor().max(f32::EPSILON);
             return ZsCanvasSize::new(
-                Dp::new(size.width.max(0) as f32 / scale),
-                Dp::new(size.height.max(0) as f32 / scale),
+                Dp::new(measured.width.max(0) as f32 / scale),
+                Dp::new(measured.height.max(0) as f32 / scale),
             );
         }
-        self.estimate_text(text, style, max_width)
+        self.estimate_text(
+            text,
+            style,
+            font_size.map(crate::ZsFontSize::dip),
+            max_width,
+        )
     }
 
     fn estimate_text(
         &self,
         text: &str,
         style: SemanticTextStyle,
+        font_size: Option<f32>,
         max_width: Option<Dp>,
     ) -> ZsCanvasSize {
-        let metrics = style
+        let mut metrics = style
             .role
             .metrics_for(crate::ZsTypographyPlatformStyle::current());
+        if let Some(size) = font_size.filter(|size| *size > 0.0) {
+            let ratio = if metrics.size > 0.0 {
+                metrics.line_height / metrics.size
+            } else {
+                1.25
+            };
+            metrics.size = size;
+            metrics.line_height = size * ratio;
+        }
         let scale = self.typography_scale.max(0.0);
         // Framework width units: one unit per Latin cell, two per CJK cell.
         let unit = metrics.size * 0.5 * scale;
@@ -546,8 +633,18 @@ impl fmt::Debug for ZsCanvasBuilder {
 pub fn zs_canvas_native_draw_plan(bounds: Rect, scene: &ZsCanvasScene, dpi: Dpi) -> NativeDrawPlan {
     let mut plan = NativeDrawPlan::default();
     plan.push(NativeDrawCommand::PushClip { rect: bounds });
+    let mut open_clips = 0usize;
     for primitive in scene.primitives() {
+        match primitive {
+            ZsCanvasPrimitive::PushClip { .. } => open_clips += 1,
+            ZsCanvasPrimitive::PopClip if open_clips == 0 => continue,
+            ZsCanvasPrimitive::PopClip => open_clips -= 1,
+            _ => {}
+        }
         plan.push(canvas_primitive_to_native(bounds, primitive, dpi));
+    }
+    for _ in 0..open_clips {
+        plan.push(NativeDrawCommand::PopClip);
     }
     plan.push(NativeDrawCommand::PopClip);
     plan
@@ -668,6 +765,10 @@ fn canvas_primitive_to_native(
                     .interpolation(interpolation),
             )
         }
+        ZsCanvasPrimitive::PushClip { rect } => NativeDrawCommand::PushClip {
+            rect: canvas_rect_to_native(bounds, *rect, dpi),
+        },
+        ZsCanvasPrimitive::PopClip => NativeDrawCommand::PopClip,
     }
 }
 
@@ -779,6 +880,66 @@ mod tests {
                 .scale_factor(),
             1.0
         );
+    }
+
+    #[test]
+    fn canvas_clip_primitives_stay_balanced() {
+        let scene = ZsCanvasScene::new()
+            .with(ZsCanvasPrimitive::pop_clip())
+            .with(ZsCanvasPrimitive::push_clip(ZsCanvasRect::new(
+                Dp::new(2.0),
+                Dp::new(2.0),
+                Dp::new(10.0),
+                Dp::new(10.0),
+            )))
+            .with(ZsCanvasPrimitive::fill_rect(
+                ZsCanvasRect::new(Dp::new(0.0), Dp::new(0.0), Dp::new(40.0), Dp::new(40.0)),
+                NativeDrawFill::role(ColorRole::Accent),
+            ));
+        let plan = zs_canvas_native_draw_plan(
+            Rect {
+                x: 10,
+                y: 10,
+                width: 100,
+                height: 50,
+            },
+            &scene,
+            Dpi::standard(),
+        );
+        let pushes = plan
+            .commands
+            .iter()
+            .filter(|c| matches!(c, NativeDrawCommand::PushClip { .. }))
+            .count();
+        let pops = plan
+            .commands
+            .iter()
+            .filter(|c| matches!(c, NativeDrawCommand::PopClip))
+            .count();
+        // The stray leading pop is dropped and the open clip is closed.
+        assert_eq!(pushes, 2);
+        assert_eq!(pops, 2);
+        assert_eq!(
+            plan.commands[1],
+            NativeDrawCommand::PushClip {
+                rect: Rect {
+                    x: 12,
+                    y: 12,
+                    width: 10,
+                    height: 10,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn canvas_measures_text_at_an_explicit_size() {
+        let cx = ZsCanvasLayoutContext::detached(ZsCanvasSize::new(Dp::new(400.0), Dp::new(100.0)));
+        let style = SemanticTextStyle::body();
+        let base = cx.measure_text("abcd", style, None);
+        let large = cx.measure_text_at("abcd", style, Some(Dp::new(48.0)), None);
+        assert!(large.width.0 > base.width.0 * 2.0);
+        assert!(large.height.0 > base.height.0 * 2.0);
     }
 
     #[test]

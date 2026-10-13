@@ -1566,7 +1566,11 @@ fn accelerator_matches(accelerator: ZsAccelerator, key: &Key, modifiers: Modifie
         | (ZsAcceleratorKey::Home, Key::Named(NamedKey::Home))
         | (ZsAcceleratorKey::End, Key::Named(NamedKey::End))
         | (ZsAcceleratorKey::PageUp, Key::Named(NamedKey::PageUp))
-        | (ZsAcceleratorKey::PageDown, Key::Named(NamedKey::PageDown)) => true,
+        | (ZsAcceleratorKey::PageDown, Key::Named(NamedKey::PageDown))
+        | (ZsAcceleratorKey::MediaPlayPause, Key::Named(NamedKey::MediaPlayPause))
+        | (ZsAcceleratorKey::MediaNextTrack, Key::Named(NamedKey::MediaTrackNext))
+        | (ZsAcceleratorKey::MediaPreviousTrack, Key::Named(NamedKey::MediaTrackPrevious))
+        | (ZsAcceleratorKey::MediaStop, Key::Named(NamedKey::MediaStop)) => true,
         _ => false,
     }
 }
@@ -2636,6 +2640,19 @@ pub(crate) fn linux_direct_open_file_dialog(
         }
     }
     Ok(crate::native_file_dialog::normalize_open_file_dialog_selection(dialog.pick_files()))
+}
+
+pub(crate) fn linux_direct_pick_folder(
+    spec: &crate::FileDialogSpec,
+) -> ZsuiResult<Option<PathBuf>> {
+    let mut dialog = rfd::FileDialog::new().set_title(&spec.title);
+    if let Some(parent) = linux_direct_file_dialog_parent() {
+        dialog = dialog.set_parent(parent.as_ref());
+    }
+    if let Some(path) = &spec.current_path {
+        dialog = dialog.set_directory(path);
+    }
+    Ok(dialog.pick_folder())
 }
 
 pub(crate) fn linux_direct_save_file_dialog(

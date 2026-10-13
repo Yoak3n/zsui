@@ -6,6 +6,7 @@ struct WindowsWin32StatusItemRouteRecord {
     tooltip: Option<String>,
     icon: Option<isize>,
     menu: MenuSpec,
+    activate: Option<Command>,
 }
 
 impl WindowsWin32StatusItemRouteRecord {
@@ -25,6 +26,7 @@ struct WindowsWin32StatusItemCallbackTarget {
     tray_id: u32,
     event_message: u32,
     menu: MenuSpec,
+    activate: Option<Command>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,7 @@ pub struct WindowsWin32OwnedTrayIcon {
     icon: Option<WindowsWin32OwnedIcon>,
     tooltip: Option<String>,
     menu: MenuSpec,
+    activate: Option<Command>,
     menu_command_table: WindowsWin32StatusMenuCommandTable,
     active: bool,
 }
@@ -61,17 +64,18 @@ impl WindowsWin32OwnedTrayIcon {
                 "Win32 tray icon owner window cannot be null",
             ));
         }
-        let icon = request
-            .icon_path
-            .as_deref()
-            .map(|path| {
-                WindowsWin32OwnedIcon::from_icon_path(
-                    path,
-                    system_metric(SM_CXSMICON),
-                    system_metric(SM_CYSMICON),
-                )
-            })
-            .transpose()?;
+        let icon = match request.icon_path.as_deref() {
+            Some(path) => Some(WindowsWin32OwnedIcon::from_icon_path(
+                path,
+                system_metric(SM_CXSMICON),
+                system_metric(SM_CYSMICON),
+            )?),
+            // Without a path the executable's own icon represents the app.
+            None => WindowsWin32OwnedIcon::from_module_resource(
+                system_metric(SM_CXSMICON),
+                system_metric(SM_CYSMICON),
+            ),
+        };
         let mut data = tray_notify_data(
             owner,
             id,
@@ -92,6 +96,7 @@ impl WindowsWin32OwnedTrayIcon {
             icon,
             tooltip: request.tooltip,
             menu: request.menu,
+            activate: request.activate,
             menu_command_table,
             active: true,
         };
@@ -141,6 +146,11 @@ impl WindowsWin32OwnedTrayIcon {
         set_windows_win32_status_item_route(self.route_record());
     }
 
+    pub fn set_activate(&mut self, activate: Option<Command>) {
+        self.activate = activate;
+        set_windows_win32_status_item_route(self.route_record());
+    }
+
     pub fn dispatch_native_menu_command(&self, native_id: u32) -> NativeStatusMenuCommandResult {
         self.menu_command_table.resolve_native_command_id(native_id)
     }
@@ -174,6 +184,7 @@ impl WindowsWin32OwnedTrayIcon {
             tooltip: self.tooltip.clone(),
             icon: self.icon.as_ref().map(|icon| icon.handle() as isize),
             menu: self.menu.clone(),
+            activate: self.activate.clone(),
         }
     }
 }
@@ -434,6 +445,7 @@ fn windows_win32_status_item_callback_target(
             tray_id,
             event_message,
             menu: route.menu.clone(),
+            activate: route.activate.clone(),
         })
 }
 
@@ -449,6 +461,12 @@ fn dispatch_windows_win32_status_item_callback(
         wparam,
         lparam,
     )?;
+    if target.event_message == WM_LBUTTONUP {
+        if let Some(command) = target.activate {
+            dispatch_windows_win32_app_command(owner, command);
+        }
+        return Some(WindowsWin32StatusItemCallbackDispatch::Ignored);
+    }
     if !matches!(target.event_message, WM_RBUTTONUP | WM_CONTEXTMENU) {
         return Some(WindowsWin32StatusItemCallbackDispatch::Ignored);
     }
@@ -545,4 +563,78 @@ fn clear_wide_buffer(target: &mut [u16]) {
     for value in target {
         *value = 0;
     }
+}
+
+
+/// One View-declared tray icon per window, applied on the UI thread.
+#[cfg(feature = "tray")]
+struct WindowsWin32ViewStatusItem {
+    owner: isize,
+    host: WindowsWin32StatusItemHost,
+    handle: u32,
+    spec: TraySpec,
+}
+
+#[cfg(feature = "tray")]
+thread_local! {
+    static WINDOWS_WIN32_VIEW_STATUS_ITEMS: std::cell::RefCell<Vec<WindowsWin32ViewStatusItem>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(feature = "tray")]
+fn apply_windows_win32_view_status_item(owner: HWND, declared: Option<TraySpec>) {
+    WINDOWS_WIN32_VIEW_STATUS_ITEMS.with(|items| {
+        let mut items = items.borrow_mut();
+        let position = items.iter().position(|item| item.owner == owner as isize);
+        match (position, declared) {
+            (None, None) => {}
+            (Some(index), None) => {
+                items.remove(index);
+            }
+            (Some(index), Some(spec)) if items[index].spec.icon_path == spec.icon_path => {
+                let item = &mut items[index];
+                if item.spec == spec {
+                    return;
+                }
+                if item.spec.tooltip != spec.tooltip {
+                    item.host.set_status_item_tooltip(item.handle, spec.tooltip.clone());
+                }
+                if item.spec.menu != spec.menu {
+                    item.host.set_status_item_menu(item.handle, spec.menu.clone());
+                }
+                if item.spec.activate != spec.activate {
+                    if let Some(icon) = item.host.items.iter_mut().find(|i| i.id() == item.handle) {
+                        icon.set_activate(spec.activate.clone());
+                    }
+                }
+                item.spec = spec;
+            }
+            (position, Some(spec)) => {
+                if let Some(index) = position {
+                    items.remove(index);
+                }
+                let mut host = WindowsWin32StatusItemHost::new(owner);
+                if let NativeStatusItemPresentation::Created(handle) =
+                    host.create_status_item(NativeStatusItemRequest::from_tray_spec(&spec))
+                {
+                    items.push(WindowsWin32ViewStatusItem {
+                        owner: owner as isize,
+                        host,
+                        handle,
+                        spec,
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// Removes a closing window's View-declared tray icon.
+#[cfg(feature = "tray")]
+fn clear_windows_win32_view_status_item(owner: HWND) {
+    let _ = WINDOWS_WIN32_VIEW_STATUS_ITEMS.try_with(|items| {
+        items
+            .borrow_mut()
+            .retain(|item| item.owner != owner as isize);
+    });
 }

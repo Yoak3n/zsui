@@ -121,6 +121,10 @@ fn windows_shortcut_accelerator(
         key if key == u32::from(VK_END) => Key::End,
         key if key == u32::from(VK_PRIOR) => Key::PageUp,
         key if key == u32::from(VK_NEXT) => Key::PageDown,
+        0xB3 => Key::MediaPlayPause,
+        0xB0 => Key::MediaNextTrack,
+        0xB1 => Key::MediaPreviousTrack,
+        0xB2 => Key::MediaStop,
         _ => return None,
     };
     let mut accelerator = crate::ZsAccelerator::new(key);

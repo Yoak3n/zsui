@@ -1126,11 +1126,37 @@ impl crate::native_input_visuals::NativeTextShaper for WindowsGdiTextShaper {
         dpi: Dpi,
         typography_scale: f32,
     ) -> Option<Size> {
+        self.measure_sized(text, semantic, None, max_width, dpi, typography_scale)
+    }
+
+    fn measure_sized(
+        &self,
+        text: &str,
+        semantic: SemanticTextStyle,
+        font_size: Option<crate::ZsFontSize>,
+        max_width: i32,
+        dpi: Dpi,
+        typography_scale: f32,
+    ) -> Option<Size> {
         let dc = WindowsGdiOwnedMemoryDc::new()?;
         let mut style = self.resolver.resolve_text_style(semantic);
         let typography_scale = typography_scale.max(0.5);
         style.size *= typography_scale;
         style.line_height *= typography_scale;
+        // Drawing applies an explicit Canvas size after resolving the role,
+        // so measurement does the same.
+        let mut sized = NativeDrawTextCommand::new(
+            "",
+            Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+            semantic,
+        );
+        sized.size = font_size;
+        sized.apply_size_override(&mut style);
         let layout = WindowsGdiTextLayout::with_dpi_scale_and_resources(
             dc.0,
             dpi.scale_factor(),

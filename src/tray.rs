@@ -6,6 +6,10 @@ pub struct TraySpec {
     pub tooltip: Option<String>,
     pub icon_path: Option<String>,
     pub menu: MenuSpec,
+    /// Raised when the icon is clicked with the primary button, for example
+    /// to bring the main window back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate: Option<Command>,
 }
 
 impl TraySpec {
@@ -14,7 +18,14 @@ impl TraySpec {
             tooltip: None,
             icon_path: None,
             menu: MenuSpec::new(),
+            activate: None,
         }
+    }
+
+    /// The command raised by a primary click on the icon.
+    pub fn on_activate(mut self, command: Command) -> Self {
+        self.activate = Some(command);
+        self
     }
 
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {

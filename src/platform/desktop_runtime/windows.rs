@@ -97,6 +97,10 @@ impl DesktopRuntimeBackend for Backend {
         crate::windows_win32_host::windows_win32_save_file_dialog(spec)
     }
 
+    fn pick_folder(&mut self, spec: &FileDialogSpec) -> ZsuiResult<Option<std::path::PathBuf>> {
+        crate::windows_win32_host::windows_win32_pick_folder(spec)
+    }
+
     fn show_native_dialog(&mut self, spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
         crate::windows_win32_host::windows_win32_show_native_dialog(spec)
     }

@@ -45,6 +45,172 @@ pub fn windows_win32_open_file_dialog(spec: &FileDialogSpec) -> ZsuiResult<Optio
     Ok(Some(parse_windows_open_file_buffer(&file_buffer)))
 }
 
+/// Folder selection through the shell's `IFileOpenDialog` with
+/// `FOS_PICKFOLDERS`, owned by the active window.
+pub fn windows_win32_pick_folder(spec: &FileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
+    use std::ffi::c_void;
+    use windows_sys::core::GUID;
+    use windows_sys::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows_sys::Win32::UI::Shell::SHCreateItemFromParsingName;
+
+    type Unknown = *mut c_void;
+    #[repr(C)]
+    struct UnknownVtbl {
+        query_interface: unsafe extern "system" fn(Unknown, *const GUID, *mut Unknown) -> i32,
+        add_ref: unsafe extern "system" fn(Unknown) -> u32,
+        release: unsafe extern "system" fn(Unknown) -> u32,
+    }
+    // IFileOpenDialog : IFileDialog : IModalWindow : IUnknown. Only the
+    // slots used here are typed; the rest keep their vtable positions.
+    #[repr(C)]
+    struct FileDialogVtbl {
+        base: UnknownVtbl,
+        show: unsafe extern "system" fn(Unknown, HWND) -> i32,
+        _set_file_types: usize,
+        _set_file_type_index: usize,
+        _get_file_type_index: usize,
+        _advise: usize,
+        _unadvise: usize,
+        set_options: unsafe extern "system" fn(Unknown, u32) -> i32,
+        get_options: unsafe extern "system" fn(Unknown, *mut u32) -> i32,
+        _set_default_folder: usize,
+        set_folder: unsafe extern "system" fn(Unknown, Unknown) -> i32,
+        _get_folder: usize,
+        _get_current_selection: usize,
+        _set_file_name: usize,
+        _get_file_name: usize,
+        set_title: unsafe extern "system" fn(Unknown, *const u16) -> i32,
+        _set_ok_button_label: usize,
+        _set_file_name_label: usize,
+        get_result: unsafe extern "system" fn(Unknown, *mut Unknown) -> i32,
+    }
+    #[repr(C)]
+    struct ShellItemVtbl {
+        base: UnknownVtbl,
+        _bind_to_handler: usize,
+        _get_parent: usize,
+        get_display_name: unsafe extern "system" fn(Unknown, i32, *mut *mut u16) -> i32,
+    }
+    struct Com(Unknown);
+    impl Drop for Com {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    let vtbl = *(self.0 as *const *const UnknownVtbl);
+                    ((*vtbl).release)(self.0);
+                }
+            }
+        }
+    }
+    struct Apartment(bool);
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    const CLSID_FILE_OPEN_DIALOG: GUID = GUID::from_u128(0xdc1c5a9c_e88a_4dde_a5a1_60f82a20aef7);
+    const IID_FILE_OPEN_DIALOG: GUID = GUID::from_u128(0xd57c7288_d4ad_4768_be02_9d969532d960);
+    const IID_SHELL_ITEM: GUID = GUID::from_u128(0x43826d1e_e718_42ee_bc55_a1e261c37bfe);
+    const FOS_PICKFOLDERS: u32 = 0x20;
+    const FOS_FORCEFILESYSTEM: u32 = 0x40;
+    const FOS_PATHMUSTEXIST: u32 = 0x800;
+    const FOS_NOCHANGEDIR: u32 = 0x8;
+    const SIGDN_FILESYSPATH: i32 = 0x8005_8000_u32 as i32;
+    const ERROR_CANCELLED_HRESULT: i32 = 0x8007_04c7_u32 as i32;
+    let failed = |step: &str, hr: i32| {
+        ZsuiError::host(
+            "windows_pick_folder",
+            format!("{step} failed with HRESULT 0x{:08x}", hr as u32),
+        )
+    };
+
+    unsafe {
+        let hr = CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
+        // S_OK/S_FALSE own one apartment reference; RPC_E_CHANGED_MODE means
+        // the thread already lives in another apartment, which also works.
+        let _apartment = Apartment(hr >= 0);
+
+        let mut dialog: Unknown = null_mut();
+        let hr = CoCreateInstance(
+            &CLSID_FILE_OPEN_DIALOG,
+            null_mut(),
+            CLSCTX_INPROC_SERVER,
+            &IID_FILE_OPEN_DIALOG,
+            &mut dialog,
+        );
+        if hr < 0 || dialog.is_null() {
+            return Err(failed("CoCreateInstance(FileOpenDialog)", hr));
+        }
+        let dialog = Com(dialog);
+        let vtbl = &**(dialog.0 as *const *const FileDialogVtbl);
+
+        let mut options = 0u32;
+        let hr = (vtbl.get_options)(dialog.0, &mut options);
+        if hr < 0 {
+            return Err(failed("IFileDialog::GetOptions", hr));
+        }
+        let hr = (vtbl.set_options)(
+            dialog.0,
+            options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR,
+        );
+        if hr < 0 {
+            return Err(failed("IFileDialog::SetOptions", hr));
+        }
+        if !spec.title.is_empty() {
+            let title = wide_null(&spec.title);
+            (vtbl.set_title)(dialog.0, title.as_ptr());
+        }
+        if let Some(path) = native_file_dialog_initial_directory(spec.current_path.as_deref()) {
+            let wide = path
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let mut folder: Unknown = null_mut();
+            if SHCreateItemFromParsingName(wide.as_ptr(), null_mut(), &IID_SHELL_ITEM, &mut folder)
+                >= 0
+                && !folder.is_null()
+            {
+                let folder = Com(folder);
+                (vtbl.set_folder)(dialog.0, folder.0);
+            }
+        }
+
+        let hr = (vtbl.show)(dialog.0, GetActiveWindow());
+        if hr == ERROR_CANCELLED_HRESULT {
+            return Ok(None);
+        }
+        if hr < 0 {
+            return Err(failed("IModalWindow::Show", hr));
+        }
+        let mut item: Unknown = null_mut();
+        let hr = (vtbl.get_result)(dialog.0, &mut item);
+        if hr < 0 || item.is_null() {
+            return Err(failed("IFileDialog::GetResult", hr));
+        }
+        let item = Com(item);
+        let item_vtbl = &**(item.0 as *const *const ShellItemVtbl);
+        let mut name: *mut u16 = null_mut();
+        let hr = (item_vtbl.get_display_name)(item.0, SIGDN_FILESYSPATH, &mut name);
+        if hr < 0 || name.is_null() {
+            return Err(failed("IShellItem::GetDisplayName", hr));
+        }
+        let mut length = 0usize;
+        while *name.add(length) != 0 {
+            length += 1;
+        }
+        let path = String::from_utf16_lossy(std::slice::from_raw_parts(name, length));
+        CoTaskMemFree(name as *const c_void);
+        Ok(Some(PathBuf::from(path)))
+    }
+}
+
 pub fn windows_win32_save_file_dialog(spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
     const FILE_BUFFER_LEN: usize = 32_768;
     let mut file_buffer = vec![0u16; FILE_BUFFER_LEN];

@@ -4920,6 +4920,30 @@ impl NativeViewInputRuntime {
         self.dispatch_view_event(ViewEvent::Shortcut { accelerator }, report)
     }
 
+    /// The live View's declared status item; `None` when there is no live
+    /// View or it is suspended, so hosts keep the last icon.
+    #[cfg(feature = "tray")]
+    pub(crate) fn declared_status_item(&self) -> Option<Option<crate::TraySpec>> {
+        self.live_view
+            .as_ref()
+            .and_then(|live_view| live_view.declared_status_item())
+    }
+
+    /// Delivers a host window placement change to the View.
+    #[cfg(feature = "window-chrome")]
+    pub(crate) fn dispatch_window_state(
+        &mut self,
+        state: crate::ZsWindowState,
+    ) -> NativeViewInputDispatchReport {
+        if self.view_suspended {
+            return NativeViewInputDispatchReport::default();
+        }
+        self.dispatch_view_event(
+            ViewEvent::WindowStateChanged { state },
+            NativeViewInputDispatchReport::default(),
+        )
+    }
+
     pub(crate) fn dispatch_key(&mut self, key: NativeViewKey) -> NativeViewInputDispatchReport {
         self.dispatch_key_with_modifiers(key, false, false)
     }
@@ -7121,10 +7145,22 @@ impl NativeViewInputRuntime {
         }
         let mut plan = self.compose_ime_preedit(plan);
         if let Some(interaction_plan) = self.current_interaction_plan() {
+            // Chromeless inputs sit inside application-drawn fields that show
+            // their own focus state.
+            let focused = self.focused_widget.filter(|widget| {
+                !self
+                    .live_view
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.widget_is_chromeless(*widget))
+                    && !self
+                        .ui_command_view
+                        .as_ref()
+                        .is_some_and(|view| view.widget_is_chromeless(*widget))
+            });
             decorate_native_focus_ring(
                 &mut plan,
                 &interaction_plan,
-                self.focused_widget,
+                focused,
                 self.focus_outline_visible,
                 self.dpi,
             );
@@ -16121,6 +16157,7 @@ mod tests {
                 .item("Open", crate::Command::ShowMainWindow)
                 .separator()
                 .item("Quit", crate::Command::Quit),
+            activate: None,
         });
 
         assert!(matches!(

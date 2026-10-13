@@ -38,6 +38,9 @@ trait LiveViewDriver: Send {
     fn widget_text_wrap(&self, widget: WidgetId) -> Option<crate::TextWrap>;
     #[cfg(feature = "shortcuts")]
     fn has_shortcut(&self, accelerator: crate::ZsAccelerator) -> bool;
+    #[cfg(feature = "tray")]
+    fn declared_status_item(&self) -> Option<Option<crate::TraySpec>>;
+    fn widget_is_chromeless(&self, widget: WidgetId) -> bool;
     #[cfg(feature = "window-chrome")]
     fn window_drag_region_at(&self, point: crate::Point) -> bool;
     #[cfg(feature = "canvas")]
@@ -230,6 +233,16 @@ impl SharedLiveViewRuntime {
     #[cfg(feature = "shortcuts")]
     pub fn has_shortcut(&self, accelerator: crate::ZsAccelerator) -> bool {
         self.lock().has_shortcut(accelerator)
+    }
+
+    pub fn widget_is_chromeless(&self, widget: WidgetId) -> bool {
+        self.lock().widget_is_chromeless(widget)
+    }
+
+    /// The View's declared status item; `None` while the View is suspended.
+    #[cfg(feature = "tray")]
+    pub fn declared_status_item(&self) -> Option<Option<crate::TraySpec>> {
+        self.lock().declared_status_item()
     }
 
     #[cfg(feature = "window-chrome")]
@@ -800,6 +813,15 @@ where
     #[cfg(feature = "shortcuts")]
     fn has_shortcut(&self, accelerator: crate::ZsAccelerator) -> bool {
         self.view.shortcut_message(accelerator).is_some()
+    }
+
+    fn widget_is_chromeless(&self, widget: WidgetId) -> bool {
+        !self.suspended && self.view.widget_is_chromeless(widget)
+    }
+
+    #[cfg(feature = "tray")]
+    fn declared_status_item(&self) -> Option<Option<crate::TraySpec>> {
+        (!self.suspended).then(|| self.view.declared_status_item().cloned())
     }
 
     #[cfg(feature = "window-chrome")]

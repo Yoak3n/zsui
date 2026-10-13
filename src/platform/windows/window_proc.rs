@@ -68,6 +68,8 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
             }
         }
         WM_NCDESTROY => {
+            #[cfg(feature = "tray")]
+            clear_windows_win32_view_status_item(hwnd);
             clear_windows_win32_status_item_routes_for_owner(hwnd);
             let state = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0)
                 as *mut WindowsWindowCreateParams;
@@ -193,6 +195,13 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
                 !minimized && refresh_windows_win32_window_shell_surface(hwnd).is_some();
             let live_view_handled =
                 !minimized && refresh_windows_win32_window_live_view_surface(hwnd);
+            #[cfg(feature = "window-chrome")]
+            if !minimized {
+                dispatch_windows_win32_window_view_window_state(
+                    hwnd,
+                    wparam == windows_sys::Win32::UI::WindowsAndMessaging::SIZE_MAXIMIZED as usize,
+                );
+            }
             if lifecycle_handled || shell_handled || live_view_handled {
                 0
             } else {

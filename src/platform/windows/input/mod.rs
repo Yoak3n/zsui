@@ -23,6 +23,8 @@ pub struct WindowsWin32ViewInputRoute {
     quit_requested: bool,
     #[cfg(feature = "window-chrome")]
     pending_window_commands: Vec<crate::ZsWindowCommand>,
+    #[cfg(feature = "window-chrome")]
+    window_maximized: Option<bool>,
     close_approved: bool,
     resource_policy: NativeWindowResourcePolicy,
     view_suspended: bool,
@@ -166,6 +168,8 @@ impl WindowsWin32ViewInputRoute {
             quit_requested: false,
             #[cfg(feature = "window-chrome")]
             pending_window_commands: Vec::new(),
+            #[cfg(feature = "window-chrome")]
+            window_maximized: None,
             close_approved: false,
         }
     }
@@ -517,6 +521,8 @@ pub fn set_windows_win32_window_view_input_route(
             InvalidateRect(hwnd, null(), 0);
         }
     }
+    #[cfg(feature = "tray")]
+    sync_windows_win32_view_status_item(hwnd);
     sync_windows_win32_live_view_poll_timer(hwnd, poll_interval_ms);
     true
 }
@@ -1127,6 +1133,14 @@ fn dispatch_windows_win32_window_view_utf16_input_unit(
     dispatch_windows_win32_window_view_input(hwnd, |route| route.dispatch_utf16_input_unit(unit))
 }
 
+/// Reports a maximize/restore change to the View; repeated sizes in the same
+/// placement are ignored.
+#[cfg(feature = "window-chrome")]
+pub fn dispatch_windows_win32_window_view_window_state(hwnd: HWND, maximized: bool) -> bool {
+    dispatch_windows_win32_window_view_input(hwnd, |route| route.dispatch_window_state(maximized))
+        .is_some_and(|report| report.handled)
+}
+
 pub fn dispatch_windows_win32_window_view_key_down(
     hwnd: HWND,
     virtual_key: u32,
@@ -1310,6 +1324,8 @@ fn dispatch_windows_win32_window_view_input_with_quit_policy(
         unsafe {
             InvalidateRect(hwnd, null(), 0);
         }
+        #[cfg(feature = "tray")]
+        sync_windows_win32_view_status_item(hwnd);
     }
     if quit_requested && post_close_on_quit {
         approve_windows_win32_window_close(hwnd);
@@ -1338,6 +1354,25 @@ fn post_windows_win32_window_commands(hwnd: HWND, commands: &[crate::ZsWindowCom
             crate::ZsWindowCommand::Close => {
                 unsafe {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                }
+                continue;
+            }
+            crate::ZsWindowCommand::Hide => {
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        hwnd,
+                        windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                    );
+                }
+                continue;
+            }
+            crate::ZsWindowCommand::Show => {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        IsIconic, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
+                    };
+                    ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
+                    SetForegroundWindow(hwnd);
                 }
                 continue;
             }
@@ -1491,4 +1526,25 @@ pub(crate) fn windows_win32_view_input_route_test_lock() -> std::sync::MutexGuar
 fn completed_window_view_input_reports(
 ) -> &'static Mutex<Vec<WindowsCompletedViewInputReportRecord>> {
     WINDOW_COMPLETED_VIEW_INPUT_REPORTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+
+/// Keeps the notification-area icon in step with the View's declaration.
+#[cfg(feature = "tray")]
+pub(crate) fn sync_windows_win32_view_status_item(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    let declared = {
+        let routes = window_view_input_routes()
+            .lock()
+            .expect("window view input route registry should not be poisoned");
+        routes
+            .iter()
+            .find(|record| record.hwnd == hwnd as isize)
+            .and_then(|record| record.route.shared_runtime.declared_status_item())
+    };
+    if let Some(declared) = declared {
+        apply_windows_win32_view_status_item(hwnd, declared);
+    }
 }

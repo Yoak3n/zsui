@@ -1250,6 +1250,8 @@ pub struct ViewStyle {
     pub theme_mode: Option<ZsuiThemeMode>,
     #[cfg(feature = "scroll")]
     pub overflow_y: ViewOverflow,
+    /// A text input that draws only its text, caret and selection.
+    pub chromeless: bool,
 }
 
 impl Default for ViewStyle {
@@ -1269,6 +1271,7 @@ impl Default for ViewStyle {
             theme_mode: None,
             #[cfg(feature = "scroll")]
             overflow_y: ViewOverflow::Visible,
+            chromeless: false,
         }
     }
 }
@@ -1350,6 +1353,10 @@ pub struct ViewNode<Msg> {
     shortcuts: Vec<(crate::ZsAccelerator, Msg)>,
     #[cfg(feature = "window-chrome")]
     window_drag_region: bool,
+    #[cfg(feature = "window-chrome")]
+    window_state_message: Option<fn(crate::ZsWindowState) -> Msg>,
+    #[cfg(feature = "tray")]
+    status_item: Option<crate::TraySpec>,
     message: PhantomData<fn() -> Msg>,
 }
 
@@ -1409,6 +1416,10 @@ impl<Msg> ViewNode<Msg> {
             shortcuts: Vec::new(),
             #[cfg(feature = "window-chrome")]
             window_drag_region: false,
+            #[cfg(feature = "window-chrome")]
+            window_state_message: None,
+            #[cfg(feature = "tray")]
+            status_item: None,
             message: PhantomData,
         }
     }
@@ -2213,6 +2224,66 @@ impl<Msg: Clone> ViewNode<Msg> {
     pub fn window_drag_region(mut self) -> Self {
         self.window_drag_region = true;
         self
+    }
+
+    /// Reports the host window's maximized state whenever it changes, so an
+    /// application-drawn title bar can switch between maximize and restore.
+    /// The first binding in preorder receives the message.
+    #[cfg(feature = "window-chrome")]
+    pub fn on_window_state_change(mut self, message: fn(crate::ZsWindowState) -> Msg) -> Self {
+        self.window_state_message = Some(message);
+        self
+    }
+
+    /// Declares the window's notification-area (tray) icon. Like shortcuts it
+    /// follows application state: every rebuild may change the tooltip or
+    /// menu, and a View without a declaration removes the icon. Menu and
+    /// activate commands reach the window's application-command mapper.
+    #[cfg(feature = "tray")]
+    pub fn status_item(mut self, spec: crate::TraySpec) -> Self {
+        self.status_item = Some(spec);
+        self
+    }
+
+    /// Draws a text input without its field background, border and focus
+    /// indicator, so it can sit inside an application-drawn field such as a
+    /// rounded search pill. Text, placeholder, caret and selection remain.
+    #[cfg(feature = "textbox")]
+    pub fn chromeless(mut self) -> Self {
+        self.style.chromeless = true;
+        self
+    }
+
+    /// Whether the node `widget` in this subtree is a chromeless input.
+    pub(crate) fn widget_is_chromeless(&self, widget: WidgetId) -> bool {
+        if self.id == Some(widget) {
+            return self.style.chromeless;
+        }
+        self.children
+            .iter()
+            .any(|child| child.widget_is_chromeless(widget))
+    }
+
+    /// The first status item declared in this subtree.
+    #[cfg(feature = "tray")]
+    pub fn declared_status_item(&self) -> Option<&crate::TraySpec> {
+        self.status_item.as_ref().or_else(|| {
+            self.children
+                .iter()
+                .find_map(|child| child.declared_status_item())
+        })
+    }
+
+    /// The message for a window state change anywhere in this subtree.
+    #[cfg(feature = "window-chrome")]
+    pub(crate) fn window_state_message(&self, state: crate::ZsWindowState) -> Option<Msg> {
+        self.window_state_message
+            .map(|message| message(state))
+            .or_else(|| {
+                self.children
+                    .iter()
+                    .find_map(|child| child.window_state_message(state))
+            })
     }
 
 /// Binds a window keyboard shortcut to a typed message.

@@ -283,6 +283,9 @@ pub fn create_owned_windows_for_specs_with_routes(
                 if let Some(icon_path) = icon_path.as_deref() {
                     let icon = WindowsWin32OwnedAppIconResource::from_icon_path(icon_path)?;
                     owned.set_main_owned_app_icon(&mut host, icon);
+                } else if let Some(icon) = WindowsWin32OwnedAppIconResource::from_module_resource() {
+                    // The taskbar and title bar use the executable's icon.
+                    owned.set_main_owned_app_icon(&mut host, icon);
                 }
                 if let Some(menu) = spec.menu.as_ref() {
                     owned.set_main_owned_menu(WindowsWin32OwnedWindowMenu::attach(
@@ -408,6 +411,22 @@ impl WindowsWin32OwnedIcon {
         }
     }
 
+    /// The executable's own icon (resource id 1) at the requested size, so
+    /// windows and tray icons match the file icon without an extra path.
+    pub fn from_module_resource(width: i32, height: i32) -> Option<Self> {
+        let icon = unsafe {
+            LoadImageW(
+                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null()),
+                1usize as *const u16,
+                IMAGE_ICON,
+                width.max(1),
+                height.max(1),
+                LR_DEFAULTCOLOR,
+            )
+        } as HICON;
+        Self::from_raw(icon)
+    }
+
     pub fn from_icon_path(path: impl AsRef<Path>, width: i32, height: i32) -> ZsuiResult<Self> {
         let path = path.as_ref();
         if path.as_os_str().is_empty() {
@@ -474,6 +493,19 @@ impl WindowsWin32OwnedAppIconResource {
             small: small_icon,
             big: big_icon,
         })
+    }
+
+    /// The executable's icon resource at small and large system sizes.
+    pub fn from_module_resource() -> Option<Self> {
+        let small = WindowsWin32OwnedIcon::from_module_resource(
+            system_metric(SM_CXSMICON),
+            system_metric(SM_CYSMICON),
+        )?;
+        let big = WindowsWin32OwnedIcon::from_module_resource(
+            system_metric(SM_CXICON),
+            system_metric(SM_CYICON),
+        )?;
+        Some(Self::from_owned_icons(small, big))
     }
 
     pub fn from_icon_path(path: impl AsRef<Path>) -> ZsuiResult<Self> {

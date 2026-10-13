@@ -147,6 +147,10 @@ impl DesktopRuntimeBackend for Backend {
         crate::linux_direct::linux_direct_save_file_dialog(spec)
     }
 
+    fn pick_folder(&mut self, spec: &FileDialogSpec) -> ZsuiResult<Option<std::path::PathBuf>> {
+        crate::linux_direct::linux_direct_pick_folder(spec)
+    }
+
     fn show_native_dialog(&mut self, spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
         crate::linux_direct::linux_direct_show_native_dialog(spec)
     }

@@ -2664,6 +2664,10 @@ fn canonical_menu_flyout_accelerator_key(value: &str) -> Option<String> {
             | "end"
             | "page_up"
             | "page_down"
+            | "media_play_pause"
+            | "media_next_track"
+            | "media_previous_track"
+            | "media_stop"
     ) {
         return Some(value);
     }
@@ -2690,6 +2694,10 @@ fn native_menu_flyout_accelerator_key(value: &str) -> Option<crate::ZsAccelerato
         "end" => crate::ZsAcceleratorKey::End,
         "page_up" => crate::ZsAcceleratorKey::PageUp,
         "page_down" => crate::ZsAcceleratorKey::PageDown,
+        "media_play_pause" => crate::ZsAcceleratorKey::MediaPlayPause,
+        "media_next_track" => crate::ZsAcceleratorKey::MediaNextTrack,
+        "media_previous_track" => crate::ZsAcceleratorKey::MediaPreviousTrack,
+        "media_stop" => crate::ZsAcceleratorKey::MediaStop,
         value if value.len() == 1 && value.as_bytes()[0].is_ascii_alphanumeric() => {
             crate::ZsAcceleratorKey::Character(char::from(value.as_bytes()[0]))
         }

@@ -22,6 +22,12 @@ pub enum ZsAcceleratorKey {
     PageUp,
     PageDown,
     Function(u8),
+    /// Hardware media keys, for players bound through View shortcuts or
+    /// global hotkeys.
+    MediaPlayPause,
+    MediaNextTrack,
+    MediaPreviousTrack,
+    MediaStop,
 }
 
 impl ZsAcceleratorKey {
@@ -59,6 +65,10 @@ impl ZsAcceleratorKey {
             Self::PageUp => "PageUp".to_string(),
             Self::PageDown => "PageDown".to_string(),
             Self::Function(number) => format!("F{number}"),
+            Self::MediaPlayPause => "Play/Pause".to_string(),
+            Self::MediaNextTrack => "Next Track".to_string(),
+            Self::MediaPreviousTrack => "Previous Track".to_string(),
+            Self::MediaStop => "Stop".to_string(),
         }
     }
 }
@@ -271,6 +281,16 @@ impl MenuItemSpec {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_keys_are_named_accelerators() {
+        assert_eq!(ZsAcceleratorKey::MediaPlayPause.label(), "Play/Pause");
+        assert!(ZsAcceleratorKey::MediaNextTrack.validate().is_ok());
+        assert_eq!(
+            ZsAccelerator::new(ZsAcceleratorKey::MediaPreviousTrack).to_string(),
+            "Previous Track"
+        );
+    }
+
     use super::*;
 
     #[test]

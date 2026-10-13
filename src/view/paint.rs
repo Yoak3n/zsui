@@ -571,6 +571,15 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
         } = &mut self.kind
         {
             let scale = cx.dpi.scale_factor().max(f32::EPSILON);
+            let visible = cx.clip.map(|clip| {
+                let visible = intersect_rects(clip, cx.bounds);
+                crate::ZsCanvasRect::new(
+                    Dp::new((visible.x - cx.bounds.x) as f32 / scale),
+                    Dp::new((visible.y - cx.bounds.y) as f32 / scale),
+                    Dp::new(visible.width.max(0) as f32 / scale),
+                    Dp::new(visible.height.max(0) as f32 / scale),
+                )
+            });
             let context = crate::ZsCanvasLayoutContext::new(
                 crate::ZsCanvasSize::new(
                     Dp::new(cx.bounds.width.max(0) as f32 / scale),
@@ -579,7 +588,8 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
                 cx.dpi,
                 cx.typography_scale(),
                 Some(cx.text_measurements.as_ref()),
-            );
+            )
+            .with_visible_rect(visible);
             *scene = builder.build(&context);
         }
         let mut children = Vec::new();
@@ -702,8 +712,16 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
             #[cfg(not(feature = "scroll"))]
             None,
         );
+        #[cfg(feature = "scroll")]
+        let scrolls = matches!(self.kind, ViewNodeKind::Scroll { .. })
+            || self.style.overflow_y == ViewOverflow::Auto;
+        #[cfg(not(feature = "scroll"))]
+        let scrolls = false;
         for (child, bounds) in self.children.iter_mut().zip(child_bounds) {
             let mut child_cx = cx.child(bounds);
+            if scrolls {
+                child_cx = child_cx.with_viewport_clip(content_bounds);
+            }
             children.extend(child.layout(&mut child_cx).children);
         }
 
@@ -714,6 +732,13 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
     }
 
     fn event(&mut self, cx: &mut ViewEventCx<Msg>, event: &ViewEvent) {
+        #[cfg(feature = "window-chrome")]
+        if let ViewEvent::WindowStateChanged { state } = event {
+            if let Some(message) = self.window_state_message(*state) {
+                cx.emit(message);
+            }
+            return;
+        }
         #[cfg(feature = "shortcuts")]
         if let ViewEvent::Shortcut { accelerator } = event {
             if let Some(message) = self.shortcut_message(*accelerator) {
@@ -3504,15 +3529,17 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
                 let metrics = crate::ZsBaseControlMetrics::for_platform(
                     crate::ZsBaseControlPlatformStyle::current(),
                 );
-                cx.draw(NativeDrawCommand::RoundRect {
-                    rect: bounds,
-                    fill: NativeDrawFill::Role(ColorRole::Surface),
-                    stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
-                    radius: radius_px(
-                        self.style.radius.or(Some(metrics.text_input_radius)),
-                        cx.dpi,
-                    ),
-                });
+                if !self.style.chromeless {
+                    cx.draw(NativeDrawCommand::RoundRect {
+                        rect: bounds,
+                        fill: NativeDrawFill::Role(ColorRole::Surface),
+                        stroke: Some(NativeDrawFill::Role(ColorRole::Border)),
+                        radius: radius_px(
+                            self.style.radius.or(Some(metrics.text_input_radius)),
+                            cx.dpi,
+                        ),
+                    });
+                }
                 let mut text_style = SemanticTextStyle::body();
                 let placeholder_visible = value.is_empty() && placeholder.is_some();
                 let display_text = if placeholder_visible {
