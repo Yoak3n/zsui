@@ -224,6 +224,7 @@ mod tests {
             NativeDrawCommand::Text(NativeDrawTextCommand {
                 color: None,
                 size: None,
+                family: None,
                 text: "自动保存 / Auto save".to_string(),
                 bounds: checked.bounds,
                 style: SemanticTextStyle::body(),
@@ -231,6 +232,7 @@ mod tests {
             NativeDrawCommand::Text(NativeDrawTextCommand {
                 color: None,
                 size: None,
+                family: None,
                 text: "更多 / More".to_string(),
                 bounds: submenu.bounds,
                 style: SemanticTextStyle::body(),

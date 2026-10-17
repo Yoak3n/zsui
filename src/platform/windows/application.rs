@@ -293,9 +293,17 @@ pub fn create_owned_windows_for_specs_with_routes(
                         menu,
                     )?);
                 }
+                if let Some(id) = spec.single_instance.as_deref() {
+                    register_windows_win32_single_instance_window(created.main, id);
+                }
+                let placed = spec.placement.is_some_and(|placement| {
+                    apply_windows_win32_window_placement(created.main, placement, main_visible)
+                });
                 if main_visible {
                     unsafe {
-                        ShowWindow(created.main, SW_SHOW);
+                        if !placed {
+                            ShowWindow(created.main, SW_SHOW);
+                        }
                         UpdateWindow(created.main);
                     }
                 }

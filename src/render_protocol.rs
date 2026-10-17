@@ -615,6 +615,59 @@ pub struct NativeDrawTextCommand {
     /// role's line-height ratio; used for icon-font glyphs and badges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<ZsFontSize>,
+    /// Explicit font family that replaces the role's family, for example a
+    /// display face for titles or a face with tabular figures for times.
+    /// Renderers fall back to the role family when it is not installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+}
+
+/// Overrides a text command applies to its resolved role style. Text
+/// measurement caches key on them so an override measures like it draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ZsTextOverrides {
+    pub size: Option<ZsFontSize>,
+    pub family: Option<ZsFontFamily>,
+}
+
+impl ZsTextOverrides {
+    pub const NONE: Self = Self {
+        size: None,
+        family: None,
+    };
+
+    pub fn sized(size: Option<ZsFontSize>) -> Self {
+        Self { size, family: None }
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.size.is_none() && self.family.is_none()
+    }
+}
+
+/// An interned font family name. Applications use a handful of families,
+/// so names are interned once and the handle stays `Copy` for caches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ZsFontFamily(&'static str);
+
+impl ZsFontFamily {
+    pub fn new(name: &str) -> Self {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+        let names = NAMES.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut names = names.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(existing) = names.get(name) {
+            return Self(existing);
+        }
+        let interned: &'static str = Box::leak(name.to_owned().into_boxed_str());
+        names.insert(interned);
+        Self(interned)
+    }
+
+    pub fn name(self) -> &'static str {
+        self.0
+    }
 }
 
 /// A font size in DIPs kept at 1/100 precision so draw commands stay `Eq`.
@@ -688,6 +741,30 @@ impl NativeDrawTextCommand {
             style,
             color: None,
             size: None,
+            family: None,
+        }
+    }
+
+    /// Draws the text in an explicit font family.
+    pub fn with_family(mut self, family: impl Into<String>) -> Self {
+        let family = family.into();
+        self.family = (!family.trim().is_empty()).then_some(family);
+        self
+    }
+
+    /// The size and family overrides this command applies.
+    pub fn overrides(&self) -> ZsTextOverrides {
+        ZsTextOverrides {
+            size: self.size.filter(|size| size.dip() > 0.0),
+            family: self.family.as_deref().map(ZsFontFamily::new),
+        }
+    }
+
+    /// Applies the explicit size and family to a resolved style.
+    pub fn apply_style_overrides(&self, style: &mut TextStyle) {
+        self.apply_size_override(style);
+        if let Some(family) = self.family.as_deref().filter(|f| !f.trim().is_empty()) {
+            style.font_family = family.to_string();
         }
     }
 
@@ -976,9 +1053,238 @@ pub enum NativeDrawCommand {
         rect: Rect,
     },
     PopClip,
+    /// An antialiased line through `points` with round joins and caps.
+    StrokePolyline {
+        points: Vec<crate::Point>,
+        stroke: NativeDrawFill,
+        width: i32,
+        closed: bool,
+    },
+    /// An antialiased polygon filled with the even-odd rule.
+    FillPolygon {
+        points: Vec<crate::Point>,
+        fill: NativeDrawFill,
+    },
+    /// A two-stop linear gradient with optional round corners. High-contrast
+    /// renderers draw `start` as a solid fill.
+    FillGradient {
+        rect: Rect,
+        start: NativeDrawFill,
+        end: NativeDrawFill,
+        direction: NativeGradientDirection,
+        radius: i32,
+    },
+}
+
+/// What a new draw plan changes on screen compared with the previous one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeDrawDamage {
+    /// Nothing visible changed; the window need not repaint.
+    None,
+    /// Repaint the whole window.
+    Full,
+    /// Repaint these window areas.
+    Rects(Vec<Rect>),
+}
+
+/// The smallest rectangle holding `a` and `b`.
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    if a.width <= 0 || a.height <= 0 {
+        return b;
+    }
+    if b.width <= 0 || b.height <= 0 {
+        return a;
+    }
+    let left = a.x.min(b.x);
+    let top = a.y.min(b.y);
+    let right = (a.x + a.width).max(b.x + b.width);
+    let bottom = (a.y + a.height).max(b.y + b.height);
+    Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    }
+}
+
+fn inflate(rect: Rect, by: i32) -> Rect {
+    Rect {
+        x: rect.x - by,
+        y: rect.y - by,
+        width: rect.width + by * 2,
+        height: rect.height + by * 2,
+    }
+}
+
+fn points_bounds(points: &[crate::Point]) -> Option<Rect> {
+    let first = points.first()?;
+    let (mut left, mut top, mut right, mut bottom) = (first.x, first.y, first.x, first.y);
+    for point in points {
+        left = left.min(point.x);
+        top = top.min(point.y);
+        right = right.max(point.x);
+        bottom = bottom.max(point.y);
+    }
+    Some(Rect {
+        x: left,
+        y: top,
+        width: right - left + 1,
+        height: bottom - top + 1,
+    })
+}
+
+/// Compares two draw plans of the same window. When both have the same
+/// shape, each changed command damages its own area; otherwise commands
+/// that match at the start and the end are skipped and everything in
+/// between is damaged. Clip changes that alter the clip depth of what
+/// follows, a new theme or typography scale, or damage covering most of
+/// `window` need a full repaint.
+pub fn native_draw_plan_damage(
+    old: &NativeDrawPlan,
+    new: &NativeDrawPlan,
+    window: Rect,
+) -> NativeDrawDamage {
+    if old.theme_mode != new.theme_mode
+        || old.typography_scale_per_mille != new.typography_scale_per_mille
+    {
+        return NativeDrawDamage::Full;
+    }
+    let (a, b) = (&old.commands, &new.commands);
+    let is_clip = |command: &NativeDrawCommand| {
+        matches!(
+            command,
+            NativeDrawCommand::PushClip { .. } | NativeDrawCommand::PopClip
+        )
+    };
+    let mut rects: Vec<Rect> = Vec::new();
+    if a.len() == b.len() {
+        for (before, after) in a.iter().zip(b) {
+            if before == after {
+                continue;
+            }
+            // A clip turning into a drawing (or back) shifts every clip after.
+            if is_clip(before) != is_clip(after)
+                || matches!(before, NativeDrawCommand::PopClip)
+                    != matches!(after, NativeDrawCommand::PopClip)
+            {
+                return NativeDrawDamage::Full;
+            }
+            rects.extend(before.bounds());
+            rects.extend(after.bounds());
+        }
+        if rects.is_empty() {
+            return NativeDrawDamage::None;
+        }
+    } else {
+        let shorter = a.len().min(b.len());
+        let mut start = 0;
+        while start < shorter && a[start] == b[start] {
+            start += 1;
+        }
+        let mut tail = 0;
+        while tail < shorter - start && a[a.len() - 1 - tail] == b[b.len() - 1 - tail] {
+            tail += 1;
+        }
+        let changed_old = &a[start..a.len() - tail];
+        let changed_new = &b[start..b.len() - tail];
+        let depth = |commands: &[NativeDrawCommand]| {
+            commands.iter().fold(0i32, |depth, command| match command {
+                NativeDrawCommand::PushClip { .. } => depth + 1,
+                NativeDrawCommand::PopClip => depth - 1,
+                _ => depth,
+            })
+        };
+        if depth(changed_old) != depth(changed_new) {
+            return NativeDrawDamage::Full;
+        }
+        rects.extend(
+            changed_old
+                .iter()
+                .chain(changed_new)
+                .filter_map(NativeDrawCommand::bounds),
+        );
+    }
+    // Room for antialiasing and glyph overhang; then merge areas that touch
+    // so a handful of rectangles remain.
+    let mut merged: Vec<Rect> = Vec::new();
+    for rect in rects
+        .into_iter()
+        .filter(|r| r.width > 0 && r.height > 0)
+        .map(|r| inflate(r, 2))
+    {
+        let mut rect = rect;
+        while let Some(index) = merged
+            .iter()
+            .position(|other| rects_touch(*other, rect, 16))
+        {
+            rect = union_rect(merged.swap_remove(index), rect);
+        }
+        merged.push(rect);
+    }
+    if merged.is_empty() {
+        return NativeDrawDamage::Full;
+    }
+    if merged.len() > 12 {
+        let bounds = merged.iter().copied().fold(merged[0], union_rect);
+        merged = vec![bounds];
+    }
+    let window_area = i64::from(window.width.max(1)) * i64::from(window.height.max(1));
+    let damage_area: i64 = merged
+        .iter()
+        .map(|r| i64::from(r.width) * i64::from(r.height))
+        .sum();
+    if damage_area * 10 > window_area * 6 {
+        NativeDrawDamage::Full
+    } else {
+        NativeDrawDamage::Rects(merged)
+    }
+}
+
+/// Whether `a` and `b` overlap or lie within `gap` of each other.
+fn rects_touch(a: Rect, b: Rect, gap: i32) -> bool {
+    a.x - gap < b.x + b.width
+        && b.x - gap < a.x + a.width
+        && a.y - gap < b.y + b.height
+        && b.y - gap < a.y + a.height
+}
+
+/// The axis a [`NativeDrawCommand::FillGradient`] runs along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum NativeGradientDirection {
+    /// From the top edge to the bottom edge.
+    #[default]
+    Vertical,
+    /// From the left edge to the right edge.
+    Horizontal,
 }
 
 impl NativeDrawCommand {
+    /// The window area this command can paint; a clip reports the area it
+    /// restricts, and the end of a clip has none.
+    pub fn bounds(&self) -> Option<Rect> {
+        match self {
+            Self::FillRect { rect, .. }
+            | Self::RoundFill { rect, .. }
+            | Self::FillGradient { rect, .. }
+            | Self::PushClip { rect } => Some(*rect),
+            Self::RoundRect { rect, .. } => Some(inflate(*rect, 1)),
+            Self::StrokeRect { rect, width, .. } | Self::StrokeArc { rect, width, .. } => {
+                Some(inflate(*rect, *width))
+            }
+            Self::FillTriangle { points, .. } => points_bounds(points),
+            Self::FillPolygon { points, .. } => points_bounds(points),
+            Self::StrokePolyline { points, width, .. } => {
+                points_bounds(points).map(|rect| inflate(rect, width / 2 + 1))
+            }
+            Self::Text(command) => Some(command.bounds),
+            #[cfg(feature = "password-box")]
+            Self::SecureText(command) => Some(command.bounds),
+            Self::Icon(command) => Some(command.bounds),
+            Self::Image(command) => Some(command.bounds),
+            Self::PopClip => None,
+        }
+    }
+
     pub const fn operation(&self) -> NativeDrawCommandOperation {
         match self {
             Self::FillRect { .. } => NativeDrawCommandOperation::FillRect,
@@ -994,6 +1300,9 @@ impl NativeDrawCommand {
             Self::Image(_) => NativeDrawCommandOperation::DrawImage,
             Self::PushClip { .. } => NativeDrawCommandOperation::PushClip,
             Self::PopClip => NativeDrawCommandOperation::PopClip,
+            Self::StrokePolyline { .. } => NativeDrawCommandOperation::StrokePolyline,
+            Self::FillPolygon { .. } => NativeDrawCommandOperation::FillPolygon,
+            Self::FillGradient { .. } => NativeDrawCommandOperation::FillGradient,
         }
     }
 }
@@ -1011,6 +1320,9 @@ pub enum NativeDrawCommandOperation {
     DrawImage,
     PushClip,
     PopClip,
+    StrokePolyline,
+    FillPolygon,
+    FillGradient,
 }
 
 impl NativeDrawCommandOperation {
@@ -1027,11 +1339,14 @@ impl NativeDrawCommandOperation {
             Self::DrawImage => "draw_image",
             Self::PushClip => "push_clip",
             Self::PopClip => "pop_clip",
+            Self::StrokePolyline => "draw_stroke_polyline",
+            Self::FillPolygon => "draw_fill_polygon",
+            Self::FillGradient => "draw_fill_gradient",
         }
     }
 }
 
-pub const REQUIRED_NATIVE_DRAW_COMMAND_OPERATIONS: [NativeDrawCommandOperation; 11] = [
+pub const REQUIRED_NATIVE_DRAW_COMMAND_OPERATIONS: [NativeDrawCommandOperation; 14] = [
     NativeDrawCommandOperation::FillRect,
     NativeDrawCommandOperation::StrokeRect,
     NativeDrawCommandOperation::StrokeArc,
@@ -1043,6 +1358,9 @@ pub const REQUIRED_NATIVE_DRAW_COMMAND_OPERATIONS: [NativeDrawCommandOperation; 
     NativeDrawCommandOperation::DrawImage,
     NativeDrawCommandOperation::PushClip,
     NativeDrawCommandOperation::PopClip,
+    NativeDrawCommandOperation::StrokePolyline,
+    NativeDrawCommandOperation::FillPolygon,
+    NativeDrawCommandOperation::FillGradient,
 ];
 
 pub fn required_native_draw_command_operation_names() -> Vec<&'static str> {
@@ -1238,6 +1556,93 @@ mod draw_command_tests {
     }
 
     #[test]
+    fn plan_damage_covers_only_what_changed() {
+        let window = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 800,
+        };
+        let fill = |x: i32, color: u8| NativeDrawCommand::FillRect {
+            rect: Rect {
+                x,
+                y: 10,
+                width: 20,
+                height: 20,
+            },
+            fill: NativeDrawFill::Color(Color::rgb(color, 0, 0)),
+        };
+        let plan = |commands: Vec<NativeDrawCommand>| NativeDrawPlan {
+            commands,
+            ..NativeDrawPlan::default()
+        };
+        let old = plan(vec![fill(0, 1), fill(100, 1), fill(200, 1)]);
+        assert_eq!(
+            native_draw_plan_damage(&old, &old.clone(), window),
+            NativeDrawDamage::None
+        );
+        // One changed command: only its area, slightly inflated.
+        let new = plan(vec![fill(0, 1), fill(100, 2), fill(200, 1)]);
+        assert_eq!(
+            native_draw_plan_damage(&old, &new, window),
+            NativeDrawDamage::Rects(vec![Rect {
+                x: 98,
+                y: 8,
+                width: 24,
+                height: 24,
+            }])
+        );
+        // Two far apart changes stay two areas.
+        let new = plan(vec![fill(0, 2), fill(100, 1), fill(200, 2)]);
+        assert_eq!(
+            native_draw_plan_damage(&old, &new, window),
+            NativeDrawDamage::Rects(vec![
+                Rect {
+                    x: -2,
+                    y: 8,
+                    width: 24,
+                    height: 24,
+                },
+                Rect {
+                    x: 198,
+                    y: 8,
+                    width: 24,
+                    height: 24,
+                },
+            ])
+        );
+        // An inserted command between unchanged ones.
+        let new = plan(vec![fill(0, 1), fill(100, 1), fill(150, 3), fill(200, 1)]);
+        assert_eq!(
+            native_draw_plan_damage(&old, &new, window),
+            NativeDrawDamage::Rects(vec![Rect {
+                x: 148,
+                y: 8,
+                width: 24,
+                height: 24,
+            }])
+        );
+        // An unbalanced clip changes how everything after it draws.
+        let new = plan(vec![
+            fill(0, 1),
+            NativeDrawCommand::PushClip { rect: window },
+            fill(100, 1),
+            fill(200, 1),
+        ]);
+        assert_eq!(
+            native_draw_plan_damage(&old, &new, window),
+            NativeDrawDamage::Full
+        );
+        // A new theme repaints everything.
+        let mut new = old.clone();
+        new.theme_mode = crate::ZsuiThemeMode::Dark;
+        assert_eq!(
+            native_draw_plan_damage(&old, &new, window),
+            NativeDrawDamage::Full
+        );
+    }
+
+    #[test]
     fn native_draw_command_operation_names_are_stable() {
         assert_eq!(
             required_native_draw_command_operation_names(),
@@ -1253,6 +1658,9 @@ mod draw_command_tests {
                 "draw_image",
                 "push_clip",
                 "pop_clip",
+                "draw_stroke_polyline",
+                "draw_fill_polygon",
+                "draw_fill_gradient",
             ]
         );
     }

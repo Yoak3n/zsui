@@ -1,3 +1,55 @@
+/// Installs `plan` and reports what it changes on screen compared with the
+/// plan it replaces.
+pub(crate) fn update_windows_win32_window_draw_plan(
+    hwnd: HWND,
+    plan: NativeDrawPlan,
+) -> crate::NativeDrawDamage {
+    if hwnd.is_null() {
+        return crate::NativeDrawDamage::None;
+    }
+    let previous = window_draw_plans()
+        .lock()
+        .expect("window draw plan registry should not be poisoned")
+        .iter()
+        .find(|record| record.hwnd == hwnd as isize)
+        .map(|record| record.plan.clone());
+    let damage = match &previous {
+        Some(previous) => {
+            let mut client: RECT = unsafe { zeroed() };
+            unsafe {
+                GetClientRect(hwnd, &mut client);
+            }
+            crate::native_draw_plan_damage(previous, &plan, rect_from_win(client))
+        }
+        None => crate::NativeDrawDamage::Full,
+    };
+    set_windows_win32_window_draw_plan(hwnd, plan);
+    damage
+}
+
+/// Invalidates what a plan update changed.
+pub(crate) fn invalidate_windows_win32_draw_damage(hwnd: HWND, damage: crate::NativeDrawDamage) {
+    match damage {
+        crate::NativeDrawDamage::None => {}
+        crate::NativeDrawDamage::Full => unsafe {
+            InvalidateRect(hwnd, null(), 0);
+        },
+        crate::NativeDrawDamage::Rects(rects) => {
+            for rect in rects {
+                let rect = RECT {
+                    left: rect.x,
+                    top: rect.y,
+                    right: rect.x + rect.width,
+                    bottom: rect.y + rect.height,
+                };
+                unsafe {
+                    InvalidateRect(hwnd, &rect, 0);
+                }
+            }
+        }
+    }
+}
+
 pub fn set_windows_win32_window_draw_plan(hwnd: HWND, plan: NativeDrawPlan) -> bool {
     if hwnd.is_null() {
         return false;
@@ -537,19 +589,58 @@ impl NativeMainWindowHost for WindowsWin32MainWindowHost {
     }
 }
 
+/// The rectangles of the window's pending update region.
+unsafe fn windows_update_rects(hwnd: HWND) -> Option<Vec<crate::Rect>> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateRectRgn, DeleteObject, GetRegionData, GetUpdateRgn, RGNDATA, RGNDATAHEADER,
+    };
+    let region = CreateRectRgn(0, 0, 0, 0);
+    if region.is_null() {
+        return None;
+    }
+    let mut rects = None;
+    if GetUpdateRgn(hwnd, region, 0) > 1 {
+        let size = GetRegionData(region, 0, null_mut());
+        if size as usize >= size_of::<RGNDATAHEADER>() {
+            let mut buffer = vec![0u8; size as usize];
+            let data = buffer.as_mut_ptr() as *mut RGNDATA;
+            if GetRegionData(region, size, data) == size {
+                let header = (*data).rdh;
+                let first = (*data).Buffer.as_ptr() as *const RECT;
+                let count = header.nCount as usize;
+                rects = Some(
+                    (0..count)
+                        .map(|i| rect_from_win(*first.add(i)))
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+    DeleteObject(region);
+    rects
+}
+
 unsafe fn paint_no_flicker_background(hwnd: HWND) -> LRESULT {
+    let update = windows_update_rects(hwnd);
     let mut ps: PAINTSTRUCT = zeroed();
     let target = BeginPaint(hwnd, &mut ps);
     if target.is_null() {
         return 0;
     }
 
+    // Paint only what was invalidated; the buffer covers that area.
     let mut rect: RECT = zeroed();
-    if GetClientRect(hwnd, &mut rect) != 0 {
+    let have_rect = if ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top {
+        rect = ps.rcPaint;
+        true
+    } else {
+        GetClientRect(hwnd, &mut rect) != 0
+    };
+    if have_rect {
         if let Some(buffered) = WindowsBufferedPaint::begin(target, &rect) {
-            paint_window_client_rect_to_dc(hwnd, buffered.hdc(), rect);
+            paint_window_client_rect_to_dc(hwnd, buffered.hdc(), rect, update.as_deref());
         } else {
-            paint_window_client_rect_to_dc(hwnd, target, rect);
+            paint_window_client_rect_to_dc(hwnd, target, rect, update.as_deref());
         }
     }
 
@@ -566,7 +657,7 @@ unsafe fn paint_window_client_to_dc(
     }
     let mut rect: RECT = zeroed();
     if GetClientRect(hwnd, &mut rect) != 0 {
-        paint_window_client_rect_to_dc(hwnd, target, rect);
+        paint_window_client_rect_to_dc(hwnd, target, rect, None);
         GdiFlush();
     }
     0
@@ -576,6 +667,7 @@ unsafe fn paint_window_client_rect_to_dc(
     hwnd: HWND,
     target: windows_sys::Win32::Graphics::Gdi::HDC,
     rect: RECT,
+    update: Option<&[crate::Rect]>,
 ) {
     let paint_state = window_paint_state(hwnd);
     let draw_plan = paint_state.as_ref().map(|(plan, _)| plan.as_ref());
@@ -598,6 +690,7 @@ unsafe fn paint_window_client_rect_to_dc(
         dpi,
         draw_plan,
         resources,
+        update,
     );
 }
 
@@ -609,6 +702,7 @@ unsafe fn paint_win32_surface(
     dpi: crate::Dpi,
     draw_plan: Option<&NativeDrawPlan>,
     resources: WindowsGdiResourceCache,
+    update: Option<&[crate::Rect]>,
 ) {
     let mut renderer = WindowsGdiRenderer::with_dpi_and_resources(dc, dpi, resources.clone());
     renderer.fill_rect(rect_from_win(rect), palette.surface);
@@ -621,6 +715,12 @@ unsafe fn paint_win32_surface(
             dpi,
             resources,
         );
+        // Only what the update region holds; the whole painted area otherwise.
+        sink.set_cull(Some(
+            update
+                .map(|rects| rects.to_vec())
+                .unwrap_or_else(|| vec![rect_from_win(rect)]),
+        ));
         sink.draw_native_plan(plan);
     }
 }

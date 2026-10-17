@@ -202,6 +202,9 @@ include!("popup.rs");
 include!("services/hotkey.rs");
 include!("services/dialog.rs");
 include!("services/tray.rs");
+include!("services/integration.rs");
+#[cfg(feature = "shell-integration")]
+include!("services/shell_integration.rs");
 include!("services/clipboard.rs");
 include!("window.rs");
 include!("input/mod.rs");

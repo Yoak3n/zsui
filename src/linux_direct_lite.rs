@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use tiny_skia::{
-    FillRule, Mask, Paint, Path, PathBuilder, PixmapMut, Rect as SkRect, Stroke, Transform,
+    FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint, Path, PathBuilder,
+    PixmapMut, Rect as SkRect, SpreadMode, Stroke, Transform,
 };
 
 use crate::linux_direct_icons::{draw_normalized_icon, LinuxIconCanvas};
@@ -11,9 +12,9 @@ use crate::linux_direct_menu::{
 use crate::native_draw_support::{NativeDrawPalette, NativeDrawTextStyleResolver};
 use crate::{
     Color, HorizontalAlign, NativeDrawCommand, NativeDrawCommandSink, NativeDrawIconCommand,
-    NativeDrawImageCommand, NativeDrawPlan, NativeDrawTextCommand, NativeImageInterpolation,
-    NativeStyleResolver, Rect, Size, TextStyle, TextWeight, TextWrap, VerticalAlign,
-    ZsRustTextEngine, ZsTextPixelRect, ZsTextRasterProfile,
+    NativeDrawImageCommand, NativeDrawPlan, NativeDrawTextCommand, NativeGradientDirection,
+    NativeImageInterpolation, NativeStyleResolver, Rect, Size, TextStyle, TextWeight, TextWrap,
+    VerticalAlign, ZsRustTextEngine, ZsTextPixelRect, ZsTextRasterProfile,
 };
 
 #[derive(Clone)]
@@ -338,7 +339,7 @@ impl<'a> LinuxLiteDrawSink<'a> {
         if let Some(color) = command.color_override(self.palette.high_contrast) {
             style.color = color;
         }
-        command.apply_size_override(&mut style);
+        command.apply_style_overrides(&mut style);
         self.draw_text_style(&command.text, command.bounds, &style);
     }
 
@@ -560,7 +561,134 @@ impl NativeDrawCommandSink for LinuxLiteDrawSink<'_> {
             NativeDrawCommand::Image(command) => self.draw_image(command),
             NativeDrawCommand::PushClip { rect } => self.push_clip(*rect),
             NativeDrawCommand::PopClip => self.pop_clip(),
+            NativeDrawCommand::StrokePolyline {
+                points,
+                stroke,
+                width,
+                closed,
+            } => {
+                // Odd device widths center on pixel centers to stay crisp.
+                let device_width = (*width).max(1) as f32 * self.scale_factor;
+                let offset = if device_width.round() as i32 % 2 == 1 {
+                    0.5
+                } else {
+                    0.0
+                };
+                let Some(path) = self.polygon_path(points, *closed, offset) else {
+                    return;
+                };
+                let stroke_style = Stroke {
+                    width: device_width,
+                    line_cap: LineCap::Round,
+                    line_join: LineJoin::Round,
+                    ..Stroke::default()
+                };
+                let mut paint = Self::paint(self.palette.resolve_source_fill(*stroke));
+                paint.anti_alias = true;
+                self.pixmap.stroke_path(
+                    &path,
+                    &paint,
+                    &stroke_style,
+                    Transform::identity(),
+                    self.mask.as_ref(),
+                );
+            }
+            NativeDrawCommand::FillPolygon { points, fill } => {
+                if points.len() < 3 {
+                    return;
+                }
+                let Some(path) = self.polygon_path(points, true, 0.0) else {
+                    return;
+                };
+                self.pixmap.fill_path(
+                    &path,
+                    &Self::paint(self.palette.resolve_source_fill(*fill)),
+                    FillRule::EvenOdd,
+                    Transform::identity(),
+                    self.mask.as_ref(),
+                );
+            }
+            NativeDrawCommand::FillGradient {
+                rect,
+                start,
+                end,
+                direction,
+                radius,
+            } => {
+                let start = self.palette.resolve_source_fill(*start);
+                if self.palette.high_contrast {
+                    self.fill_round_color(*rect, *radius as f32, start);
+                    return;
+                }
+                let end = self.palette.resolve_source_fill(*end);
+                let (Some(bounds), Some(path)) = (
+                    self.physical_rect(*rect),
+                    self.round_path(*rect, *radius as f32),
+                ) else {
+                    return;
+                };
+                let (from, to) = match direction {
+                    NativeGradientDirection::Vertical => (
+                        tiny_skia::Point::from_xy(bounds.left(), bounds.top()),
+                        tiny_skia::Point::from_xy(bounds.left(), bounds.bottom()),
+                    ),
+                    NativeGradientDirection::Horizontal => (
+                        tiny_skia::Point::from_xy(bounds.left(), bounds.top()),
+                        tiny_skia::Point::from_xy(bounds.right(), bounds.top()),
+                    ),
+                };
+                let Some(shader) = LinearGradient::new(
+                    from,
+                    to,
+                    vec![
+                        GradientStop::new(0.0, sk_color(start)),
+                        GradientStop::new(1.0, sk_color(end)),
+                    ],
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                ) else {
+                    self.fill_round_color(*rect, *radius as f32, start);
+                    return;
+                };
+                let paint = Paint {
+                    shader,
+                    anti_alias: true,
+                    ..Paint::default()
+                };
+                self.pixmap.fill_path(
+                    &path,
+                    &paint,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    self.mask.as_ref(),
+                );
+            }
         }
+    }
+}
+
+impl LinuxLiteDrawSink<'_> {
+    /// A device-space path through `points`, shifted by `offset` device
+    /// pixels so odd-width strokes land on pixel centers.
+    fn polygon_path(&self, points: &[crate::Point], closed: bool, offset: f32) -> Option<Path> {
+        let (first, rest) = points.split_first()?;
+        let device = |point: &crate::Point| {
+            (
+                point.x as f32 * self.scale_factor + offset,
+                point.y.saturating_add(self.origin_y) as f32 * self.scale_factor + offset,
+            )
+        };
+        let mut path = PathBuilder::new();
+        let (x, y) = device(first);
+        path.move_to(x, y);
+        for point in rest {
+            let (x, y) = device(point);
+            path.line_to(x, y);
+        }
+        if closed {
+            path.close();
+        }
+        path.finish()
     }
 }
 

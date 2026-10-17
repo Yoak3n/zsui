@@ -140,6 +140,23 @@ impl WindowsWin32OwnedTrayIcon {
         updated
     }
 
+    /// Shows a notification from this icon; current Windows presents it as
+    /// a toast in the notification center.
+    pub fn show_notification(&mut self, title: &str, body: &str, silent: bool) -> bool {
+        use windows_sys::Win32::UI::Shell::{NIF_INFO, NIIF_NOSOUND, NIIF_USER};
+        let mut data = self.data;
+        data.uFlags = NIF_INFO;
+        clear_wide_buffer(&mut data.szInfoTitle);
+        clear_wide_buffer(&mut data.szInfo);
+        copy_wide_truncated(title, &mut data.szInfoTitle);
+        copy_wide_truncated(if body.is_empty() { " " } else { body }, &mut data.szInfo);
+        // Since Vista a user icon comes from hBalloonIcon; without one the
+        // shell accepts the request and shows nothing.
+        data.hBalloonIcon = data.hIcon;
+        data.dwInfoFlags = NIIF_USER | if silent { NIIF_NOSOUND } else { 0 };
+        unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) != 0 }
+    }
+
     pub fn set_menu(&mut self, menu: MenuSpec) {
         self.menu_command_table = WindowsWin32StatusMenuCommandTable::from_menu(&menu);
         self.menu = menu;
@@ -627,6 +644,28 @@ fn apply_windows_win32_view_status_item(owner: HWND, declared: Option<TraySpec>)
             }
         }
     });
+}
+
+/// Shows a notification from the window's View-declared tray icon.
+#[cfg(feature = "tray")]
+fn notify_windows_win32_view_status_item(
+    owner: HWND,
+    title: &str,
+    body: &str,
+    silent: bool,
+) -> bool {
+    WINDOWS_WIN32_VIEW_STATUS_ITEMS.with(|items| {
+        let mut items = items.borrow_mut();
+        let Some(item) = items.iter_mut().find(|item| item.owner == owner as isize) else {
+            return false;
+        };
+        let handle = item.handle;
+        item.host
+            .items
+            .iter_mut()
+            .find(|icon| icon.id() == handle)
+            .is_some_and(|icon| icon.show_notification(title, body, silent))
+    })
 }
 
 /// Removes a closing window's View-declared tray icon.

@@ -732,6 +732,18 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
     }
 
     fn event(&mut self, cx: &mut ViewEventCx<Msg>, event: &ViewEvent) {
+        if let ViewEvent::Host(host_event) = event {
+            if let Some(message) = self.host_message(host_event) {
+                cx.emit(message);
+            }
+            return;
+        }
+        if let ViewEvent::FocusChanged { widget, focused } = event {
+            if let Some(message) = self.focus_change_message(*widget, *focused) {
+                cx.emit(message);
+            }
+            return;
+        }
         #[cfg(feature = "window-chrome")]
         if let ViewEvent::WindowStateChanged { state } = event {
             if let Some(message) = self.window_state_message(*state) {
@@ -1890,6 +1902,12 @@ impl<Msg: Clone> View<Msg> for ViewNode<Msg> {
                 (ViewNodeKind::Canvas { on_hover, .. }, ViewEvent::CanvasHover { region, .. }) => {
                     if let Some(message) = on_hover {
                         cx.emit(message.map(*region));
+                    }
+                }
+                #[cfg(feature = "canvas")]
+                (ViewNodeKind::Canvas { on_wheel, .. }, ViewEvent::CanvasWheel { event, .. }) => {
+                    if let Some(message) = on_wheel.as_ref().and_then(|mapper| mapper.map(*event)) {
+                        cx.emit(message);
                     }
                 }
                 #[cfg(feature = "toggle-button")]

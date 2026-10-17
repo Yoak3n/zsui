@@ -68,9 +68,12 @@ pub mod content_dialog;
 pub mod control_protocol;
 #[doc(hidden)]
 pub mod core;
+#[doc(hidden)]
+pub mod cursor;
 #[cfg(feature = "date-picker")]
 #[doc(hidden)]
 pub mod date;
+pub mod desktop_integration;
 #[path = "platform/desktop_runtime/mod.rs"]
 mod desktop_runtime;
 #[doc(hidden)]
@@ -92,7 +95,6 @@ pub mod geometry;
 #[cfg(feature = "grid-view")]
 #[doc(hidden)]
 pub mod grid_view;
-#[doc(hidden)]
 pub mod host;
 #[doc(hidden)]
 pub mod host_protocol;
@@ -433,7 +435,7 @@ pub use calculator::{
 pub use canvas::{
     zs_canvas_native_draw_plan, ZsCanvasBuilder, ZsCanvasHoverRegion, ZsCanvasLayoutContext,
     ZsCanvasPoint, ZsCanvasPointerEvent, ZsCanvasPointerPhase, ZsCanvasPrimitive, ZsCanvasRect,
-    ZsCanvasScene, ZsCanvasSize,
+    ZsCanvasRegion, ZsCanvasRegionLabel, ZsCanvasScene, ZsCanvasSize, ZsCanvasWheelEvent,
 };
 #[doc(hidden)]
 pub use capability::{CapabilityStatus, CapabilitySupport, HostCapabilities, PlatformName};
@@ -483,9 +485,15 @@ pub use core::{
     FileDialogFilter, FileDialogSpec, HotkeyId, NativeDialogSpec, TrayId, WindowId, ZsuiError,
     ZsuiResult,
 };
+pub use cursor::ZsCursor;
 #[cfg(feature = "date-picker")]
 #[doc(hidden)]
 pub use date::{days_in_month, is_leap_year, ZsDate};
+pub use desktop_integration::{
+    zs_forward_to_running_instance, ZsHostDeclarations, ZsHostEvent, ZsMediaCommand,
+    ZsMediaSession, ZsNotification, ZsTaskbarButton, ZsTaskbarProgress, ZsTaskbarSpec,
+    ZsWindowPlacement,
+};
 #[doc(hidden)]
 pub use desktop_services::{
     ClipboardService, DesktopCapabilities, DesktopCapability, DesktopCapabilityEntry, DesktopEvent,
@@ -792,14 +800,15 @@ pub use progress::{ZsProgressBarMode, ZsProgressBarSpec, ZsProgressBarStatus};
 pub use render_protocol::NativeDrawSecureTextCommand;
 #[doc(hidden)]
 pub use render_protocol::{
-    required_native_draw_command_operation_names, Color, ColorRole, HorizontalAlign,
-    NativeDrawCommand, NativeDrawCommandOperation, NativeDrawCommandSink, NativeDrawFill,
-    NativeDrawIconCommand, NativeDrawImageCommand, NativeDrawPlan, NativeDrawTextCommand,
-    NativeFontMetrics, NativeIconColorMode, NativeImageInterpolation, NativeStyleHostOperation,
-    NativeStyleResolver, NativeTypographyProfile, Renderer, RendererHostOperation,
-    SemanticTextStyle, TextLayout, TextLayoutHostOperation, TextRole, TextRun, TextStyle,
-    TextWeight, TextWrap, VerticalAlign, ZsFontSize, ZsImageFrame, ZsImageFrameId,
-    ZsTypographyMetrics, ZsTypographyPlatformStyle, REQUIRED_NATIVE_DRAW_COMMAND_OPERATIONS,
+    native_draw_plan_damage, required_native_draw_command_operation_names, Color, ColorRole,
+    HorizontalAlign, NativeDrawCommand, NativeDrawCommandOperation, NativeDrawCommandSink,
+    NativeDrawDamage, NativeDrawFill, NativeDrawIconCommand, NativeDrawImageCommand,
+    NativeDrawPlan, NativeDrawTextCommand, NativeFontMetrics, NativeGradientDirection,
+    NativeIconColorMode, NativeImageInterpolation, NativeStyleHostOperation, NativeStyleResolver,
+    NativeTypographyProfile, Renderer, RendererHostOperation, SemanticTextStyle, TextLayout,
+    TextLayoutHostOperation, TextRole, TextRun, TextStyle, TextWeight, TextWrap, VerticalAlign,
+    ZsFontFamily, ZsFontSize, ZsImageFrame, ZsImageFrameId, ZsTextOverrides, ZsTypographyMetrics,
+    ZsTypographyPlatformStyle, REQUIRED_NATIVE_DRAW_COMMAND_OPERATIONS,
     REQUIRED_NATIVE_STYLE_HOST_OPERATIONS, REQUIRED_RENDERER_HOST_OPERATIONS,
     REQUIRED_TEXT_LAYOUT_HOST_OPERATIONS,
 };

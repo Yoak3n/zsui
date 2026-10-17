@@ -1,4 +1,4 @@
-use std::{ffi::c_void, fmt, mem::size_of, ptr::null_mut};
+use std::{collections::HashMap, ffi::c_void, fmt, mem::size_of, ptr::null_mut};
 
 use windows_sys::Win32::{
     Foundation::HANDLE,
@@ -21,7 +21,23 @@ pub(crate) struct WindowsRustTextState {
     bitmap: Option<WindowsRustTextBitmap>,
     profile: ZsTextRasterProfile,
     stats: WindowsRustTextStats,
+    /// Truncated texts already fitted to their boxes.
+    ellipsized: HashMap<EllipsisKey, String>,
 }
+
+/// What an ellipsized text depends on.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EllipsisKey {
+    text: String,
+    family: String,
+    size_bits: u32,
+    weight: u8,
+    width_px: i32,
+    height_px: i32,
+    dpi_bits: u32,
+}
+
+const ELLIPSIS_CACHE_LIMIT: usize = 2048;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct WindowsRustTextStats {
@@ -38,6 +54,7 @@ impl Default for WindowsRustTextState {
             bitmap: None,
             profile: ZsTextRasterProfile::subpixel_rgb(),
             stats: WindowsRustTextStats::default(),
+            ellipsized: HashMap::new(),
         }
     }
 }
@@ -103,17 +120,51 @@ impl WindowsRustTextState {
         if was_uninitialized {
             self.stats.engine_initializations = self.stats.engine_initializations.saturating_add(1);
         }
-        let layout = engine.layout(
+        let mut layout = engine.layout(
             &run.text,
             style,
             run.bounds.width,
             run.bounds.height,
             dpi_scale,
         );
-        // Character-safe ellipsis is not approximated. Until the Rust layout
-        // owns that operation, the host falls through to DirectWrite/GDI.
+        // Single lines that do not fit end in an ellipsis after the last
+        // whole grapheme that does, drawn by the same engine as every other
+        // run so truncated text keeps its face and size.
         if style.ellipsis && layout.overflows_horizontally() {
-            return Err("Rust text ellipsis is not implemented".into());
+            let key = EllipsisKey {
+                text: run.text.clone(),
+                family: style.font_family.clone(),
+                size_bits: style.size.to_bits(),
+                weight: style.weight as u8,
+                width_px: run.bounds.width,
+                height_px: run.bounds.height,
+                dpi_bits: dpi_scale.to_bits(),
+            };
+            let fitted = match self.ellipsized.get(&key) {
+                Some(fitted) => fitted.clone(),
+                None => {
+                    let fitted = fit_ellipsis(
+                        engine,
+                        &run.text,
+                        style,
+                        run.bounds.width,
+                        run.bounds.height,
+                        dpi_scale,
+                    );
+                    if self.ellipsized.len() >= ELLIPSIS_CACHE_LIMIT {
+                        self.ellipsized.clear();
+                    }
+                    self.ellipsized.insert(key, fitted.clone());
+                    fitted
+                }
+            };
+            layout = engine.layout(
+                &fitted,
+                style,
+                run.bounds.width,
+                run.bounds.height,
+                dpi_scale,
+            );
         }
 
         let width = run.bounds.width as u32;
@@ -365,4 +416,40 @@ mod tests {
             ZsTextRasterMode::SubpixelRgb
         );
     }
+}
+
+/// The longest grapheme prefix of `text` that fits `width_px` with an
+/// ellipsis appended, trailing spaces dropped.
+fn fit_ellipsis(
+    engine: &mut ZsRustTextEngine,
+    text: &str,
+    style: &TextStyle,
+    width_px: i32,
+    height_px: i32,
+    dpi_scale: f32,
+) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    // Byte offsets after each grapheme.
+    let ends: Vec<usize> = text
+        .grapheme_indices(true)
+        .map(|(start, grapheme)| start + grapheme.len())
+        .collect();
+    let candidate = |kept: usize| -> String {
+        let end = if kept == 0 { 0 } else { ends[kept - 1] };
+        format!("{}\u{2026}", text[..end].trim_end())
+    };
+    // Keep `lo` graphemes for sure; `hi` is the first count known not to fit.
+    let (mut lo, mut hi) = (0usize, ends.len());
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let fits = !engine
+            .layout(&candidate(mid), style, width_px, height_px, dpi_scale)
+            .overflows_horizontally();
+        if fits {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    candidate(lo)
 }

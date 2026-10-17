@@ -24,7 +24,7 @@ pub struct WindowsWin32ViewInputRoute {
     #[cfg(feature = "window-chrome")]
     pending_window_commands: Vec<crate::ZsWindowCommand>,
     #[cfg(feature = "window-chrome")]
-    window_maximized: Option<bool>,
+    window_maximized: Option<crate::ZsWindowState>,
     close_approved: bool,
     resource_policy: NativeWindowResourcePolicy,
     view_suspended: bool,
@@ -516,10 +516,8 @@ pub fn set_windows_win32_window_view_input_route(
     drop(routes);
     adopt_windows_win32_window_renderer_resources(hwnd, text_resources);
     if let Some(draw_plan) = draw_plan {
-        set_windows_win32_window_draw_plan(hwnd, draw_plan);
-        unsafe {
-            InvalidateRect(hwnd, null(), 0);
-        }
+        let damage = update_windows_win32_window_draw_plan(hwnd, draw_plan);
+        invalidate_windows_win32_draw_damage(hwnd, damage);
     }
     #[cfg(feature = "tray")]
     sync_windows_win32_view_status_item(hwnd);
@@ -852,10 +850,8 @@ pub fn refresh_windows_win32_window_live_view_surface(hwnd: HWND) -> bool {
         record.route.take_pending_draw_plan()
     };
     if let Some(draw_plan) = draw_plan {
-        set_windows_win32_window_draw_plan(hwnd, draw_plan);
-        unsafe {
-            InvalidateRect(hwnd, null(), 0);
-        }
+        let damage = update_windows_win32_window_draw_plan(hwnd, draw_plan);
+        invalidate_windows_win32_draw_damage(hwnd, damage);
     }
     true
 }
@@ -892,10 +888,8 @@ pub fn sync_windows_win32_window_view_visibility(hwnd: HWND, visible: bool) -> b
     if released {
         clear_windows_win32_window_draw_plan(hwnd);
     } else if let Some(draw_plan) = draw_plan {
-        set_windows_win32_window_draw_plan(hwnd, draw_plan);
-        unsafe {
-            InvalidateRect(hwnd, null(), 0);
-        }
+        let damage = update_windows_win32_window_draw_plan(hwnd, draw_plan);
+        invalidate_windows_win32_draw_damage(hwnd, damage);
     }
     sync_windows_win32_live_view_poll_timer(hwnd, poll_interval_ms);
     eligible
@@ -1133,11 +1127,15 @@ fn dispatch_windows_win32_window_view_utf16_input_unit(
     dispatch_windows_win32_window_view_input(hwnd, |route| route.dispatch_utf16_input_unit(unit))
 }
 
-/// Reports a maximize/restore change to the View; repeated sizes in the same
-/// placement are ignored.
+/// Reports a maximize/restore or placement change to the View; repeated
+/// reports of the same state are ignored.
 #[cfg(feature = "window-chrome")]
 pub fn dispatch_windows_win32_window_view_window_state(hwnd: HWND, maximized: bool) -> bool {
-    dispatch_windows_win32_window_view_input(hwnd, |route| route.dispatch_window_state(maximized))
+    let state = crate::ZsWindowState {
+        maximized,
+        placement: windows_win32_window_placement(hwnd),
+    };
+    dispatch_windows_win32_window_view_input(hwnd, |route| route.dispatch_window_state(state))
         .is_some_and(|report| report.handled)
 }
 
@@ -1320,12 +1318,11 @@ fn dispatch_windows_win32_window_view_input_with_quit_policy(
     }
 
     if let Some(draw_plan) = draw_plan {
-        set_windows_win32_window_draw_plan(hwnd, draw_plan);
-        unsafe {
-            InvalidateRect(hwnd, null(), 0);
-        }
+        let damage = update_windows_win32_window_draw_plan(hwnd, draw_plan);
+        invalidate_windows_win32_draw_damage(hwnd, damage);
         #[cfg(feature = "tray")]
         sync_windows_win32_view_status_item(hwnd);
+        sync_windows_win32_view_host_declarations(hwnd);
     }
     if quit_requested && post_close_on_quit {
         approve_windows_win32_window_close(hwnd);
@@ -1364,6 +1361,17 @@ fn post_windows_win32_window_commands(hwnd: HWND, commands: &[crate::ZsWindowCom
                         windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
                     );
                 }
+                continue;
+            }
+            crate::ZsWindowCommand::Notify {
+                title,
+                body,
+                silent,
+            } => {
+                #[cfg(feature = "tray")]
+                notify_windows_win32_view_status_item(hwnd, title, body, *silent);
+                #[cfg(not(feature = "tray"))]
+                let _ = (title, body, silent);
                 continue;
             }
             crate::ZsWindowCommand::Show => {

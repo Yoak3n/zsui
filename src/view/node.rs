@@ -954,6 +954,7 @@ pub enum ViewNodeKind<Msg> {
         on_click: Option<Msg>,
         on_pointer: Option<ViewMessageMapper<crate::ZsCanvasPointerEvent, Msg>>,
         on_hover: Option<ViewMessageMapper<Option<u64>, Msg>>,
+        on_wheel: Option<ViewMessageMapper<crate::ZsCanvasWheelEvent, Option<Msg>>>,
     },
     #[cfg(feature = "button")]
     Button {
@@ -1357,6 +1358,13 @@ pub struct ViewNode<Msg> {
     window_state_message: Option<fn(crate::ZsWindowState) -> Msg>,
     #[cfg(feature = "tray")]
     status_item: Option<crate::TraySpec>,
+    cursor: Option<crate::ZsCursor>,
+    refresh_interval_ms: Option<u64>,
+    host_handlers: crate::desktop_integration::ViewHostHandlers<Msg>,
+    focus_change_message: Option<fn(bool) -> Msg>,
+    media_session: Option<crate::ZsMediaSession>,
+    taskbar: Option<crate::ZsTaskbarSpec>,
+    notification: Option<crate::ZsNotification>,
     message: PhantomData<fn() -> Msg>,
 }
 
@@ -1420,6 +1428,13 @@ impl<Msg> ViewNode<Msg> {
             window_state_message: None,
             #[cfg(feature = "tray")]
             status_item: None,
+            cursor: None,
+            refresh_interval_ms: None,
+            host_handlers: Default::default(),
+            focus_change_message: None,
+            media_session: None,
+            taskbar: None,
+            notification: None,
             message: PhantomData,
         }
     }
@@ -2069,6 +2084,22 @@ impl<Msg> ViewNode<Msg> {
     }
 
     pub fn background_poll_interval_ms(&self) -> Option<u64> {
+        let own = self.own_background_poll_interval_ms();
+        let children = self
+            .children
+            .iter()
+            .filter_map(ViewNode::background_poll_interval_ms)
+            .min();
+        match (own, children) {
+            (Some(own), Some(children)) => Some(own.min(children)),
+            (own, children) => own.or(children),
+        }
+    }
+
+    fn own_background_poll_interval_ms(&self) -> Option<u64> {
+        if let Some(interval_ms) = self.refresh_interval_ms {
+            return Some(interval_ms);
+        }
         #[cfg(feature = "ui-viewer")]
         if let Some(interval_ms) = self.document_poll_interval_ms {
             return Some(interval_ms);
@@ -2107,10 +2138,7 @@ impl<Msg> ViewNode<Msg> {
                 return Some(source.refresh_interval_ms());
             }
         }
-        self.children
-            .iter()
-            .filter_map(ViewNode::background_poll_interval_ms)
-            .min()
+        None
     }
 
     #[cfg(feature = "ui-viewer")]
@@ -2245,6 +2273,74 @@ impl<Msg: Clone> ViewNode<Msg> {
         self
     }
 
+    /// The pointer cursor over this node's interactive area. Text inputs
+    /// show an I-beam by default; Canvas regions may override the cursor.
+    pub fn cursor(mut self, cursor: crate::ZsCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    /// Rebuilds the View at least every `interval` while this node is
+    /// declared, for animation the application draws itself, such as a
+    /// Canvas that eases towards a target using the clock. Declare it only
+    /// while something moves; intervals below 8 ms are raised to 8 ms.
+    pub fn refresh_every(mut self, interval: std::time::Duration) -> Self {
+        self.refresh_interval_ms = Some((interval.as_millis() as u64).max(8));
+        self
+    }
+
+    /// Reports the system switching between light and dark app themes.
+    pub fn on_system_theme_change(mut self, message: fn(crate::ZsuiThemeMode) -> Msg) -> Self {
+        self.host_handlers.theme = Some(message);
+        self
+    }
+
+    /// Accepts files and folders dropped on the window.
+    pub fn on_files_dropped(mut self, message: fn(Vec<std::path::PathBuf>) -> Msg) -> Self {
+        self.host_handlers.files = Some(message);
+        self
+    }
+
+    /// Reports a second launch of a single-instance application with its
+    /// arguments. The host has already brought the window to the front.
+    pub fn on_second_instance(mut self, message: fn(Vec<String>) -> Msg) -> Self {
+        self.host_handlers.instance = Some(message);
+        self
+    }
+
+    /// Declares the system media session: media keys, headset buttons, the
+    /// volume flyout and the lock screen show and control it. Commands
+    /// arrive through [`Self::on_media_command`].
+    pub fn media_session(mut self, session: crate::ZsMediaSession) -> Self {
+        self.media_session = Some(session);
+        self
+    }
+
+    pub fn on_media_command(mut self, message: fn(crate::ZsMediaCommand) -> Msg) -> Self {
+        self.host_handlers.media = Some(message);
+        self
+    }
+
+    /// Declares taskbar thumbnail buttons and taskbar progress. Button
+    /// commands reach the window's application-command mapper.
+    pub fn taskbar(mut self, spec: crate::ZsTaskbarSpec) -> Self {
+        self.taskbar = Some(spec);
+        self
+    }
+
+    /// Declares a system notification, shown once each time a new key
+    /// appears; see [`crate::ZsNotification`].
+    pub fn notification(mut self, notification: crate::ZsNotification) -> Self {
+        self.notification = Some(notification);
+        self
+    }
+
+    /// Reports this widget gaining (`true`) or losing keyboard focus.
+    pub fn on_focus_change(mut self, message: fn(bool) -> Msg) -> Self {
+        self.focus_change_message = Some(message);
+        self
+    }
+
     /// Draws a text input without its field background, border and focus
     /// indicator, so it can sit inside an application-drawn field such as a
     /// rounded search pill. Text, placeholder, caret and selection remain.
@@ -2262,6 +2358,102 @@ impl<Msg: Clone> ViewNode<Msg> {
         self.children
             .iter()
             .any(|child| child.widget_is_chromeless(widget))
+    }
+
+    /// The message for a host event: the first handler in preorder.
+    pub(crate) fn host_message(&self, event: &crate::ZsHostEvent) -> Option<Msg> {
+        self.host_handlers.message(event).or_else(|| {
+            self.children
+                .iter()
+                .find_map(|child| child.host_message(event))
+        })
+    }
+
+    /// The media session, taskbar and file-drop declarations in this subtree.
+    pub fn declared_host(&self) -> crate::ZsHostDeclarations {
+        let mut declarations = crate::ZsHostDeclarations::default();
+        self.collect_host_declarations(&mut declarations);
+        declarations
+    }
+
+    fn collect_host_declarations(&self, declarations: &mut crate::ZsHostDeclarations) {
+        if declarations.media_session.is_none() {
+            declarations.media_session = self.media_session.clone();
+        }
+        if declarations.taskbar.is_none() {
+            declarations.taskbar = self.taskbar.clone();
+        }
+        if declarations.notification.is_none() {
+            declarations.notification = self.notification.clone();
+        }
+        declarations.accepts_files |= self.host_handlers.accepts_files();
+        for child in &self.children {
+            child.collect_host_declarations(declarations);
+        }
+    }
+
+    /// The focus message of widget `widget`, if it has `on_focus_change`.
+    pub(crate) fn focus_change_message(&self, widget: WidgetId, focused: bool) -> Option<Msg> {
+        if self.id == Some(widget) {
+            return self.focus_change_message.map(|message| message(focused));
+        }
+        self.children
+            .iter()
+            .find_map(|child| child.focus_change_message(widget, focused))
+    }
+
+    /// The cursor a node or Canvas region asks for at `point`, when the
+    /// interactive target under the pointer is `widget`.
+    pub(crate) fn cursor_for(&self, widget: WidgetId, point: crate::Point) -> Option<crate::ZsCursor> {
+        if self.id == Some(widget) {
+            #[cfg(feature = "canvas")]
+            if let (ViewNodeKind::Canvas { scene, .. }, Some(bounds)) = (&self.kind, self.bounds) {
+                if let Some(cursor) = scene
+                    .region_at(self.canvas_local_point(bounds, point))
+                    .and_then(|region| region.cursor)
+                {
+                    return Some(cursor);
+                }
+            }
+            return self.cursor;
+        }
+        self.children
+            .iter()
+            .find_map(|child| child.cursor_for(widget, point))
+    }
+
+    /// The wheel message of the Canvas `widget`; `None` lets the wheel
+    /// scroll the enclosing Scroll as usual.
+    #[cfg(feature = "canvas")]
+    pub(crate) fn canvas_wheel_event(
+        &self,
+        widget: WidgetId,
+        point: crate::Point,
+        delta: crate::Dp,
+    ) -> Option<crate::ZsCanvasWheelEvent> {
+        if self.id == Some(widget) {
+            let (
+                ViewNodeKind::Canvas {
+                    scene,
+                    on_wheel: Some(on_wheel),
+                    ..
+                },
+                Some(bounds),
+            ) = (&self.kind, self.bounds)
+            else {
+                return None;
+            };
+            let position = self.canvas_local_point(bounds, point);
+            let event = crate::ZsCanvasWheelEvent {
+                region: scene.hover_region_at(position),
+                position,
+                delta,
+            };
+            return on_wheel.map(event).is_some().then_some(event);
+        }
+        self.children
+            .iter()
+            .find_map(|child| child.canvas_wheel_event(widget, point, delta))
     }
 
     /// The first status item declared in this subtree.
@@ -2876,6 +3068,20 @@ impl<Msg: Clone> ViewNode<Msg> {
     pub fn on_canvas_hover(mut self, message: fn(Option<u64>) -> Msg) -> Self {
         if let ViewNodeKind::Canvas { on_hover, .. } = &mut self.kind {
             *on_hover = Some(ViewMessageMapper::from_function(message));
+        }
+        self
+    }
+
+    #[cfg(feature = "canvas")]
+    /// Receives mouse wheel turns over the Canvas, for example to change a
+    /// volume slider. Return `None` to let the wheel scroll the enclosing
+    /// Scroll instead.
+    pub fn on_canvas_wheel_with(
+        mut self,
+        message: impl Fn(crate::ZsCanvasWheelEvent) -> Option<Msg> + Send + Sync + 'static,
+    ) -> Self {
+        if let ViewNodeKind::Canvas { on_wheel, .. } = &mut self.kind {
+            *on_wheel = Some(ViewMessageMapper::from_shared(message));
         }
         self
     }

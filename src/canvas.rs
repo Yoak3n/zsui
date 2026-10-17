@@ -152,6 +152,9 @@ pub enum ZsCanvasPrimitive {
         style: SemanticTextStyle,
         color: Option<Color>,
         size: Option<Dp>,
+        /// A font family that replaces the role's family when installed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        family: Option<String>,
     },
     /// A theme-aware icon tinted with an explicit brand color. High-contrast
     /// mode falls back to `fallback`.
@@ -176,6 +179,30 @@ pub enum ZsCanvasPrimitive {
     /// Ends the innermost [`ZsCanvasPrimitive::PushClip`]; ignored when no
     /// clip is open.
     PopClip,
+    /// An antialiased line through `points` with round joins and caps, for
+    /// example a divider at an angle, a sparkline or a waveform. `closed`
+    /// joins the last point back to the first.
+    StrokePolyline {
+        points: Vec<ZsCanvasPoint>,
+        stroke: NativeDrawFill,
+        width: Dp,
+        #[serde(default)]
+        closed: bool,
+    },
+    /// An antialiased polygon with the even-odd fill rule.
+    FillPolygon {
+        points: Vec<ZsCanvasPoint>,
+        fill: NativeDrawFill,
+    },
+    /// A two-stop linear gradient filling `rect` with optional round
+    /// corners. High-contrast mode draws `start` as a solid fill.
+    FillGradient {
+        rect: ZsCanvasRect,
+        start: NativeDrawFill,
+        end: NativeDrawFill,
+        direction: crate::NativeGradientDirection,
+        radius: Dp,
+    },
 }
 
 impl ZsCanvasPrimitive {
@@ -223,7 +250,19 @@ impl ZsCanvasPrimitive {
             style,
             color,
             size,
+            family: None,
         }
+    }
+
+    /// Draws a text run in `family` instead of the role's family, for
+    /// example a display face or one with tabular figures. Other
+    /// primitives are returned unchanged.
+    pub fn with_font_family(mut self, name: impl Into<String>) -> Self {
+        if let Self::TextRun { family, .. } = &mut self {
+            let name = name.into();
+            *family = (!name.trim().is_empty()).then_some(name);
+        }
+        self
     }
 
     /// One glyph of the platform icon font (Segoe Fluent Icons or Segoe MDL2
@@ -271,6 +310,68 @@ impl ZsCanvasPrimitive {
     pub const fn pop_clip() -> Self {
         Self::PopClip
     }
+
+    /// A straight antialiased line from `from` to `to`.
+    pub fn line(from: ZsCanvasPoint, to: ZsCanvasPoint, stroke: NativeDrawFill, width: Dp) -> Self {
+        Self::polyline(vec![from, to], stroke, width)
+    }
+
+    /// An open antialiased line through `points`.
+    pub fn polyline(points: Vec<ZsCanvasPoint>, stroke: NativeDrawFill, width: Dp) -> Self {
+        Self::StrokePolyline {
+            points,
+            stroke,
+            width,
+            closed: false,
+        }
+    }
+
+    /// The outline of the polygon through `points`.
+    pub fn polygon_outline(points: Vec<ZsCanvasPoint>, stroke: NativeDrawFill, width: Dp) -> Self {
+        Self::StrokePolyline {
+            points,
+            stroke,
+            width,
+            closed: true,
+        }
+    }
+
+    /// A filled antialiased polygon through `points`.
+    pub fn polygon(points: Vec<ZsCanvasPoint>, fill: NativeDrawFill) -> Self {
+        Self::FillPolygon { points, fill }
+    }
+
+    /// A gradient from `start` at the top of `rect` to `end` at its bottom.
+    pub const fn vertical_gradient(
+        rect: ZsCanvasRect,
+        start: NativeDrawFill,
+        end: NativeDrawFill,
+        radius: Dp,
+    ) -> Self {
+        Self::FillGradient {
+            rect,
+            start,
+            end,
+            direction: crate::NativeGradientDirection::Vertical,
+            radius,
+        }
+    }
+
+    /// A gradient from `start` at the left of `rect` to `end` at its right.
+    pub const fn horizontal_gradient(
+        rect: ZsCanvasRect,
+        start: NativeDrawFill,
+        end: NativeDrawFill,
+        radius: Dp,
+    ) -> Self {
+        Self::FillGradient {
+            rect,
+            start,
+            end,
+            direction: crate::NativeGradientDirection::Horizontal,
+            radius,
+        }
+    }
 }
 
 /// Immutable custom-drawing content retained by a Canvas View node.
@@ -284,6 +385,9 @@ pub struct ZsCanvasScene {
     /// Rectangles that report pointer hover through `on_canvas_hover`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hover_regions: Vec<ZsCanvasHoverRegion>,
+    /// Accessible names (and tooltips) of labeled regions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    region_labels: Vec<ZsCanvasRegionLabel>,
 }
 
 /// A rectangle of a Canvas scene that reports pointer hover.
@@ -291,6 +395,95 @@ pub struct ZsCanvasScene {
 pub struct ZsCanvasHoverRegion {
     pub id: u64,
     pub rect: ZsCanvasRect,
+    /// The pointer cursor over this region; `None` uses the Canvas cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::ZsCursor>,
+}
+
+/// The accessible name of a labeled region. Assistive technology exposes
+/// the region as a button with this name, and hovering it shows the name as
+/// a tooltip unless the label is marked silent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZsCanvasRegionLabel {
+    pub id: u64,
+    pub label: String,
+    /// Show the label as a tooltip on hover.
+    #[serde(default = "default_true")]
+    pub tooltip: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A region of a Canvas scene described in one place: where it is, the
+/// cursor over it, and its accessible label.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZsCanvasRegion {
+    id: u64,
+    rect: ZsCanvasRect,
+    cursor: Option<crate::ZsCursor>,
+    label: Option<String>,
+    tooltip: bool,
+}
+
+impl ZsCanvasRegion {
+    pub fn new(id: u64, rect: ZsCanvasRect) -> Self {
+        Self {
+            id,
+            rect,
+            cursor: None,
+            label: None,
+            tooltip: true,
+        }
+    }
+
+    /// The pointer cursor over this region.
+    pub fn cursor(mut self, cursor: crate::ZsCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    /// The accessible name, also shown as a tooltip on hover.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        let label = label.into();
+        self.label = (!label.trim().is_empty()).then_some(label);
+        self
+    }
+
+    /// Keeps the accessible name but shows no tooltip, for regions whose
+    /// visible text already says what they do.
+    pub fn without_tooltip(mut self) -> Self {
+        self.tooltip = false;
+        self
+    }
+}
+
+/// The synthetic widget id of a labeled Canvas region, used for its
+/// tooltip and its accessibility node.
+#[cfg(any(test, feature = "tooltip", feature = "accessibility"))]
+pub(crate) const fn zs_canvas_region_widget(
+    canvas: crate::WidgetId,
+    region: u64,
+) -> crate::WidgetId {
+    let mut hash = canvas.0 ^ 0x6361_6e76_6173_7267;
+    hash = hash.rotate_left(29).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ region;
+    hash ^= hash >> 31;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 29;
+    crate::WidgetId(hash | (1 << 63))
+}
+
+/// A mouse wheel turn over a Canvas with `on_canvas_wheel`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZsCanvasWheelEvent {
+    /// The topmost hover region under the pointer.
+    pub region: Option<u64>,
+    /// The pointer position in local DP.
+    pub position: ZsCanvasPoint,
+    /// Scroll distance in DP; positive moves content up (wheel turned
+    /// towards the user), like a Scroll offset change.
+    pub delta: Dp,
 }
 
 impl ZsCanvasScene {
@@ -299,6 +492,7 @@ impl ZsCanvasScene {
             primitives: Vec::new(),
             extent_height: None,
             hover_regions: Vec::new(),
+            region_labels: Vec::new(),
         }
     }
 
@@ -328,7 +522,56 @@ impl ZsCanvasScene {
     }
 
     pub fn push_hover_region(&mut self, id: u64, rect: ZsCanvasRect) {
-        self.hover_regions.push(ZsCanvasHoverRegion { id, rect });
+        self.hover_regions.push(ZsCanvasHoverRegion {
+            id,
+            rect,
+            cursor: None,
+        });
+    }
+
+    /// Declares a region with a cursor and an accessible label. Labeled
+    /// regions appear to assistive technology as buttons, show their label
+    /// as a tooltip, and can be invoked like a click at their center.
+    pub fn push_region(&mut self, region: ZsCanvasRegion) {
+        self.hover_regions.push(ZsCanvasHoverRegion {
+            id: region.id,
+            rect: region.rect,
+            cursor: region.cursor,
+        });
+        if let Some(label) = region.label {
+            self.region_labels
+                .retain(|existing| existing.id != region.id);
+            self.region_labels.push(ZsCanvasRegionLabel {
+                id: region.id,
+                label,
+                tooltip: region.tooltip,
+            });
+        }
+    }
+
+    pub fn with_region(mut self, region: ZsCanvasRegion) -> Self {
+        self.push_region(region);
+        self
+    }
+
+    pub fn region_labels(&self) -> &[ZsCanvasRegionLabel] {
+        &self.region_labels
+    }
+
+    /// The label of region `id`, if it has one.
+    pub fn region_label(&self, id: u64) -> Option<&ZsCanvasRegionLabel> {
+        self.region_labels.iter().find(|label| label.id == id)
+    }
+
+    /// The topmost region containing `point`, in local DP.
+    pub fn region_at(&self, point: ZsCanvasPoint) -> Option<&ZsCanvasHoverRegion> {
+        self.hover_regions.iter().rev().find(|region| {
+            let rect = region.rect;
+            point.x.0 >= rect.x.0
+                && point.y.0 >= rect.y.0
+                && point.x.0 < rect.x.0 + rect.width.0
+                && point.y.0 < rect.y.0 + rect.height.0
+        })
     }
 
     pub fn hover_regions(&self) -> &[ZsCanvasHoverRegion] {
@@ -337,17 +580,7 @@ impl ZsCanvasScene {
 
     /// The topmost hover region containing `point`, in local DP.
     pub fn hover_region_at(&self, point: ZsCanvasPoint) -> Option<u64> {
-        self.hover_regions
-            .iter()
-            .rev()
-            .find(|region| {
-                let rect = region.rect;
-                point.x.0 >= rect.x.0
-                    && point.y.0 >= rect.y.0
-                    && point.x.0 < rect.x.0 + rect.width.0
-                    && point.y.0 < rect.y.0 + rect.height.0
-            })
-            .map(|region| region.id)
+        self.region_at(point).map(|region| region.id)
     }
 
     pub fn with(mut self, primitive: ZsCanvasPrimitive) -> Self {
@@ -378,6 +611,7 @@ impl FromIterator<ZsCanvasPrimitive> for ZsCanvasScene {
             primitives: iter.into_iter().collect(),
             extent_height: None,
             hover_regions: Vec::new(),
+            region_labels: Vec::new(),
         }
     }
 }
@@ -515,6 +749,20 @@ impl<'a> ZsCanvasLayoutContext<'a> {
         size: Option<Dp>,
         max_width: Option<Dp>,
     ) -> ZsCanvasSize {
+        self.measure_text_with(text, style, size, None, max_width)
+    }
+
+    /// Measures `text` drawn at an explicit size in an explicit font
+    /// family, matching a [`ZsCanvasPrimitive::TextRun`] built with
+    /// [`ZsCanvasPrimitive::with_font_family`].
+    pub fn measure_text_with(
+        &self,
+        text: &str,
+        style: SemanticTextStyle,
+        size: Option<Dp>,
+        family: Option<&str>,
+        max_width: Option<Dp>,
+    ) -> ZsCanvasSize {
         let max_px = max_width
             .filter(|_| style.wrap == crate::TextWrap::Word)
             .map(|width| canvas_non_negative_px(width, self.dpi))
@@ -522,9 +770,15 @@ impl<'a> ZsCanvasLayoutContext<'a> {
         let font_size = size
             .filter(|size| size.0.is_finite() && size.0 > 0.0)
             .map(|size| crate::ZsFontSize::from_dip(size.0));
+        let overrides = crate::ZsTextOverrides {
+            size: font_size,
+            family: family
+                .filter(|family| !family.trim().is_empty())
+                .map(crate::ZsFontFamily::new),
+        };
         if let Some(measured) = self
             .measurements
-            .and_then(|measurements| measurements.measure_sized(text, style, font_size, max_px))
+            .and_then(|measurements| measurements.measure_sized(text, style, overrides, max_px))
         {
             let scale = self.dpi.scale_factor().max(f32::EPSILON);
             return ZsCanvasSize::new(
@@ -723,6 +977,7 @@ fn canvas_primitive_to_native(
             style,
             color,
             size,
+            family,
         } => {
             let mut command = crate::NativeDrawTextCommand::new(
                 text,
@@ -731,6 +986,7 @@ fn canvas_primitive_to_native(
             );
             command.color = *color;
             command.size = size.map(|size| crate::ZsFontSize::from_dip(size.0));
+            command.family = family.clone();
             NativeDrawCommand::Text(command)
         }
         ZsCanvasPrimitive::ColoredIcon {
@@ -769,6 +1025,40 @@ fn canvas_primitive_to_native(
             rect: canvas_rect_to_native(bounds, *rect, dpi),
         },
         ZsCanvasPrimitive::PopClip => NativeDrawCommand::PopClip,
+        ZsCanvasPrimitive::StrokePolyline {
+            points,
+            stroke,
+            width,
+            closed,
+        } => NativeDrawCommand::StrokePolyline {
+            points: points
+                .iter()
+                .map(|point| canvas_point_to_native(bounds, *point, dpi))
+                .collect(),
+            stroke: *stroke,
+            width: canvas_non_negative_px(*width, dpi).max(1),
+            closed: *closed,
+        },
+        ZsCanvasPrimitive::FillPolygon { points, fill } => NativeDrawCommand::FillPolygon {
+            points: points
+                .iter()
+                .map(|point| canvas_point_to_native(bounds, *point, dpi))
+                .collect(),
+            fill: *fill,
+        },
+        ZsCanvasPrimitive::FillGradient {
+            rect,
+            start,
+            end,
+            direction,
+            radius,
+        } => NativeDrawCommand::FillGradient {
+            rect: canvas_rect_to_native(bounds, *rect, dpi),
+            start: *start,
+            end: *end,
+            direction: *direction,
+            radius: canvas_non_negative_px(*radius, dpi),
+        },
     }
 }
 
@@ -826,6 +1116,74 @@ pub(crate) fn zs_canvas_pointer_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_polygons_and_gradients_scale_into_canvas_bounds() {
+        let ink = NativeDrawFill::Role(ColorRole::Accent);
+        let point = |x, y| ZsCanvasPoint::new(Dp::new(x), Dp::new(y));
+        let scene = ZsCanvasScene::new()
+            .with(ZsCanvasPrimitive::line(
+                point(0.0, 1.0),
+                point(10.0, 1.0),
+                ink,
+                Dp::new(0.2),
+            ))
+            .with(ZsCanvasPrimitive::polygon(
+                vec![point(0.0, 0.0), point(4.0, 0.0), point(2.0, 3.0)],
+                ink,
+            ))
+            .with(ZsCanvasPrimitive::vertical_gradient(
+                ZsCanvasRect::new(Dp::new(1.0), Dp::new(2.0), Dp::new(10.0), Dp::new(5.0)),
+                ink,
+                NativeDrawFill::Role(ColorRole::Surface),
+                Dp::new(3.0),
+            ));
+        let bounds = Rect {
+            x: 100,
+            y: 40,
+            width: 200,
+            height: 100,
+        };
+        let plan = zs_canvas_native_draw_plan(bounds, &scene, Dpi::new(192.0));
+        assert_eq!(
+            plan.commands[1],
+            NativeDrawCommand::StrokePolyline {
+                points: vec![
+                    crate::Point { x: 100, y: 42 },
+                    crate::Point { x: 120, y: 42 }
+                ],
+                stroke: ink,
+                width: 1,
+                closed: false,
+            }
+        );
+        assert_eq!(
+            plan.commands[2],
+            NativeDrawCommand::FillPolygon {
+                points: vec![
+                    crate::Point { x: 100, y: 40 },
+                    crate::Point { x: 108, y: 40 },
+                    crate::Point { x: 104, y: 46 }
+                ],
+                fill: ink,
+            }
+        );
+        assert_eq!(
+            plan.commands[3],
+            NativeDrawCommand::FillGradient {
+                rect: Rect {
+                    x: 102,
+                    y: 44,
+                    width: 20,
+                    height: 10,
+                },
+                start: ink,
+                end: NativeDrawFill::Role(ColorRole::Surface),
+                direction: crate::NativeGradientDirection::Vertical,
+                radius: 6,
+            }
+        );
+    }
 
     #[test]
     fn canvas_images_draw_one_to_one_at_their_pixel_size() {

@@ -1174,6 +1174,7 @@ impl LinuxDirectWindow {
                     .dispatch_pointer_scroll(*point, crate::Dp::new(*delta_y as f32));
                 reports.push(self.apply_report(report, event_loop));
             }
+            crate::NativeViewSmokeInput::Wait(_) => {}
             crate::NativeViewSmokeInput::WindowCloseRequest => {
                 let report = self.runtime.dispatch_window_close_requested();
                 reports.push(self.apply_report(report, event_loop));
@@ -1880,7 +1881,7 @@ impl<'a> LinuxDirectDrawSink<'a> {
         if let Some(color) = command.color_override(self.palette.high_contrast) {
             style.color = color;
         }
-        command.apply_size_override(&mut style);
+        command.apply_style_overrides(&mut style);
         let layout = self
             .text_layout
             .pango_layout(&command.text, &style, Some(command.bounds));
@@ -2155,6 +2156,101 @@ impl NativeDrawCommandSink for LinuxDirectDrawSink<'_> {
             NativeDrawCommand::Image(command) => self.draw_image(command),
             NativeDrawCommand::PushClip { rect } => self.push_clip(*rect),
             NativeDrawCommand::PopClip => self.pop_clip(),
+            NativeDrawCommand::StrokePolyline {
+                points,
+                stroke,
+                width,
+                closed,
+            } => {
+                let Some((first, rest)) = points.split_first() else {
+                    return;
+                };
+                let width = f64::from((*width).max(1));
+                // Odd device widths center on pixel centers to stay crisp.
+                let scale = self
+                    .context
+                    .user_to_device_distance(1.0, 0.0)
+                    .map(|(scale, _)| scale.abs().max(0.1))
+                    .unwrap_or(1.0);
+                let offset = if (width * scale).round() as i64 % 2 == 1 {
+                    0.5 / scale
+                } else {
+                    0.0
+                };
+                let _ = self.context.save();
+                self.set_source(self.palette.resolve_source_fill(*stroke));
+                self.context.set_line_width(width);
+                self.context.set_line_cap(cairo::LineCap::Round);
+                self.context.set_line_join(cairo::LineJoin::Round);
+                self.context
+                    .move_to(f64::from(first.x) + offset, f64::from(first.y) + offset);
+                for point in rest {
+                    self.context
+                        .line_to(f64::from(point.x) + offset, f64::from(point.y) + offset);
+                }
+                if *closed {
+                    self.context.close_path();
+                }
+                let _ = self.context.stroke();
+                let _ = self.context.restore();
+            }
+            NativeDrawCommand::FillPolygon { points, fill } => {
+                let Some((first, rest)) = points.split_first() else {
+                    return;
+                };
+                if rest.len() < 2 {
+                    return;
+                }
+                let _ = self.context.save();
+                self.set_source(self.palette.resolve_source_fill(*fill));
+                self.context.set_fill_rule(cairo::FillRule::EvenOdd);
+                self.context.move_to(f64::from(first.x), f64::from(first.y));
+                for point in rest {
+                    self.context.line_to(f64::from(point.x), f64::from(point.y));
+                }
+                self.context.close_path();
+                let _ = self.context.fill();
+                let _ = self.context.restore();
+            }
+            NativeDrawCommand::FillGradient {
+                rect,
+                start,
+                end,
+                direction,
+                radius,
+            } => {
+                let start = self.palette.resolve_source_fill(*start);
+                self.add_round_rect(*rect, *radius);
+                if self.palette.high_contrast {
+                    self.set_source(start);
+                    let _ = self.context.fill();
+                    return;
+                }
+                let end = self.palette.resolve_source_fill(*end);
+                let (x0, y0) = (f64::from(rect.x), f64::from(rect.y));
+                let (x1, y1) = match direction {
+                    crate::NativeGradientDirection::Vertical => {
+                        (x0, y0 + f64::from(rect.height.max(0)))
+                    }
+                    crate::NativeGradientDirection::Horizontal => {
+                        (x0 + f64::from(rect.width.max(0)), y0)
+                    }
+                };
+                let gradient = cairo::LinearGradient::new(x0, y0, x1, y1);
+                for (offset, color) in [(0.0, start), (1.0, end)] {
+                    gradient.add_color_stop_rgba(
+                        offset,
+                        f64::from(color.r) / 255.0,
+                        f64::from(color.g) / 255.0,
+                        f64::from(color.b) / 255.0,
+                        f64::from(color.a) / 255.0,
+                    );
+                }
+                if self.context.set_source(&gradient).is_err() {
+                    self.set_source(start);
+                }
+                let _ = self.context.fill();
+            }
         }
     }
 }

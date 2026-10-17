@@ -36,11 +36,13 @@ use objc2_app_kit::{
     NSFontTextStyleCaption1, NSFontTextStyleLargeTitle, NSFontTextStyleOptionKey,
     NSFontTextStyleTitle1, NSFontTextStyleTitle2, NSFontTextStyleTitle3, NSFontWeightBold,
     NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName,
-    NSGraphicsContext, NSHomeFunctionKey, NSImage, NSLeftArrowFunctionKey, NSLineBreakMode,
+    NSGradient, NSGradientDrawingOptions, NSGraphicsContext, NSHomeFunctionKey, NSImage,
+    NSLeftArrowFunctionKey, NSLineBreakMode, NSLineCapStyle, NSLineJoinStyle,
     NSMutableParagraphStyle, NSPageDownFunctionKey, NSPageUpFunctionKey,
     NSParagraphStyleAttributeName, NSRightArrowFunctionKey, NSStringDrawing,
     NSStringDrawingOptions, NSStringNSExtendedStringDrawing, NSTabCharacter, NSTextAlignment,
     NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSUpArrowFunctionKey, NSView,
+    NSWindingRule,
 };
 #[cfg(feature = "accessibility")]
 use objc2_foundation::NSNumber;
@@ -2202,6 +2204,7 @@ impl MacosAppKitDrawViewHost {
                         .dispatch_pointer_scroll(*point, crate::Dp::new(*delta_y as f32));
                     dispatch(report, &mut reports);
                 }
+                crate::NativeViewSmokeInput::Wait(_) => {}
                 crate::NativeViewSmokeInput::WindowCloseRequest => {
                     let report = self
                         .view
@@ -2619,7 +2622,7 @@ impl MacosAppKitDrawSink {
         if let Some(color) = command.color_override(self.palette.high_contrast) {
             style.color = color;
         }
-        command.apply_size_override(&mut style);
+        command.apply_style_overrides(&mut style);
         let attributes = appkit_text_attributes(&style);
         let dictionary: &NSDictionary<NSAttributedStringKey, AnyObject> = &attributes;
         let text = NSString::from_str(&command.text);
@@ -2891,6 +2894,105 @@ impl NativeDrawCommandSink for MacosAppKitDrawSink {
                 self.clip_depth += 1;
             }
             NativeDrawCommand::PopClip => self.pop_clip(),
+            NativeDrawCommand::StrokePolyline {
+                points,
+                stroke,
+                width,
+                closed,
+            } => {
+                let Some((first, rest)) = points.split_first() else {
+                    return;
+                };
+                // The view is flipped with one unit per point; odd widths
+                // center on pixel centers to stay crisp at 1x.
+                let width = f64::from((*width).max(1));
+                let offset = if width as i64 % 2 == 1 { 0.5 } else { 0.0 };
+                let path = NSBezierPath::bezierPath();
+                path.moveToPoint(NSPoint::new(
+                    f64::from(first.x) + offset,
+                    f64::from(first.y) + offset,
+                ));
+                for point in rest {
+                    path.lineToPoint(NSPoint::new(
+                        f64::from(point.x) + offset,
+                        f64::from(point.y) + offset,
+                    ));
+                }
+                if *closed {
+                    path.closePath();
+                }
+                path.setLineWidth(width);
+                path.setLineCapStyle(NSLineCapStyle::Round);
+                path.setLineJoinStyle(NSLineJoinStyle::Round);
+                appkit_color(self.palette.resolve_source_fill(*stroke)).setStroke();
+                path.stroke();
+            }
+            NativeDrawCommand::FillPolygon { points, fill } => {
+                let Some((first, rest)) = points.split_first() else {
+                    return;
+                };
+                if rest.len() < 2 {
+                    return;
+                }
+                let path = NSBezierPath::bezierPath();
+                path.moveToPoint(NSPoint::new(f64::from(first.x), f64::from(first.y)));
+                for point in rest {
+                    path.lineToPoint(NSPoint::new(f64::from(point.x), f64::from(point.y)));
+                }
+                path.closePath();
+                path.setWindingRule(NSWindingRule::EvenOdd);
+                appkit_color(self.palette.resolve_source_fill(*fill)).setFill();
+                path.fill();
+            }
+            NativeDrawCommand::FillGradient {
+                rect,
+                start,
+                end,
+                direction,
+                radius,
+            } => {
+                let radius = f64::from((*radius).max(0));
+                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    appkit_rect(*rect),
+                    radius,
+                    radius,
+                );
+                let start = appkit_color(self.palette.resolve_source_fill(*start));
+                let gradient = (!self.palette.high_contrast)
+                    .then(|| {
+                        NSGradient::initWithStartingColor_endingColor(
+                            NSGradient::alloc(),
+                            &start,
+                            &appkit_color(self.palette.resolve_source_fill(*end)),
+                        )
+                    })
+                    .flatten();
+                let Some(gradient) = gradient else {
+                    start.setFill();
+                    path.fill();
+                    return;
+                };
+                let from = NSPoint::new(f64::from(rect.x), f64::from(rect.y));
+                let to = match direction {
+                    crate::NativeGradientDirection::Vertical => NSPoint::new(
+                        f64::from(rect.x),
+                        f64::from(rect.y) + f64::from(rect.height.max(0)),
+                    ),
+                    crate::NativeGradientDirection::Horizontal => NSPoint::new(
+                        f64::from(rect.x) + f64::from(rect.width.max(0)),
+                        f64::from(rect.y),
+                    ),
+                };
+                NSGraphicsContext::saveGraphicsState_class();
+                path.addClip();
+                gradient.drawFromPoint_toPoint_options(
+                    from,
+                    to,
+                    NSGradientDrawingOptions::DrawsBeforeStartingLocation
+                        | NSGradientDrawingOptions::DrawsAfterEndingLocation,
+                );
+                NSGraphicsContext::restoreGraphicsState_class();
+            }
         }
     }
 }

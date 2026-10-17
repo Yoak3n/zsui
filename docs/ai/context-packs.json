@@ -458,11 +458,11 @@
         ".github/workflows/ci.yml",
         "scripts/check-native-boundary.ps1",
         "scripts/check-feature-matrix.ps1",
-        "tools/native-proof/Cargo.toml",
-        "tools/native-proof/src/main.rs",
-        "README.md"
+        "tools/native-proof/Cargo.toml"
       ],
       "optional": [
+        "tools/native-proof/src/main.rs",
+        "README.md",
         "AGENTS.md",
         "README.en.md",
         "docs/ai-agent.md",

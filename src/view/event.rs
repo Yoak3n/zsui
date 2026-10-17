@@ -182,6 +182,19 @@ pub enum ViewEvent {
         widget: WidgetId,
         region: Option<u64>,
     },
+    /// The mouse wheel turned over a Canvas with `on_canvas_wheel`.
+    #[cfg(feature = "canvas")]
+    CanvasWheel {
+        widget: WidgetId,
+        event: crate::ZsCanvasWheelEvent,
+    },
+    /// A widget with `on_focus_change` gained or lost keyboard focus.
+    FocusChanged {
+        widget: WidgetId,
+        focused: bool,
+    },
+    /// The host reported a system event; the root resolves the handler.
+    Host(crate::ZsHostEvent),
     TextChanged {
         widget: WidgetId,
         value: String,
@@ -820,6 +833,16 @@ impl ViewInteractionPlan {
             .and_then(|node| node.action_target)
     }
 
+    /// The bounds of the accessibility node for `widget`, including
+    /// synthetic nodes such as labeled Canvas regions.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn accessibility_node_bounds(&self, widget: WidgetId) -> Option<Rect> {
+        self.accessibility_nodes
+            .iter()
+            .find(|node| node.widget == widget)
+            .map(|node| node.bounds)
+    }
+
     pub fn target_at(&self, point: Point) -> Option<WidgetId> {
         self.hit_target_at(point).map(|target| target.widget)
     }
@@ -1376,6 +1399,26 @@ impl AppCx {
     #[cfg(feature = "window-chrome")]
     pub fn window_command(&mut self, command: crate::ZsWindowCommand) {
         self.window_commands.push(command);
+    }
+
+    /// Shows a system notification from the window's tray icon.
+    #[cfg(feature = "window-chrome")]
+    pub fn notify(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.window_commands.push(crate::ZsWindowCommand::Notify {
+            title: title.into(),
+            body: body.into(),
+            silent: false,
+        });
+    }
+
+    /// Shows a system notification without the notification sound.
+    #[cfg(feature = "window-chrome")]
+    pub fn notify_silently(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.window_commands.push(crate::ZsWindowCommand::Notify {
+            title: title.into(),
+            body: body.into(),
+            silent: true,
+        });
     }
 
     #[cfg(feature = "window-chrome")]

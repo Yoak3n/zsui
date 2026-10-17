@@ -74,18 +74,20 @@ pub(crate) trait NativeTextShaper {
         None
     }
 
-    /// Measures text drawn with an explicit font size. Shapers that cannot
-    /// resize the resolved font scale the role-size measurement.
+    /// Measures text drawn with an explicit font size or family. Shapers
+    /// that cannot resize the resolved font scale the role-size measurement
+    /// and ignore the family.
     fn measure_sized(
         &self,
         text: &str,
         style: crate::SemanticTextStyle,
-        font_size: Option<crate::ZsFontSize>,
+        overrides: crate::ZsTextOverrides,
         max_width: i32,
         dpi: Dpi,
         typography_scale: f32,
     ) -> Option<crate::Size> {
-        let Some(requested) = font_size
+        let Some(requested) = overrides
+            .size
             .map(crate::ZsFontSize::dip)
             .filter(|size| *size > 0.0)
         else {
@@ -193,35 +195,35 @@ impl NativeTextShapingBackend {
             let NativeDrawCommand::Text(command) = command else {
                 continue;
             };
-            let font_size = command.size.filter(|size| size.dip() > 0.0);
+            let overrides = command.overrides();
             if let Some(size) = previous
-                .measure_sized(&command.text, command.style, font_size, 0)
+                .measure_sized(&command.text, command.style, overrides, 0)
                 .or_else(|| {
                     shaper.measure_sized(
                         &command.text,
                         command.style,
-                        font_size,
+                        overrides,
                         0,
                         dpi,
                         typography_scale,
                     )
                 })
             {
-                measurements.insert_sized(&command.text, command.style, font_size, 0, size);
+                measurements.insert_sized(&command.text, command.style, overrides, 0, size);
             }
             if command.style.wrap == crate::TextWrap::Word && command.bounds.width > 0 {
                 if let Some(size) = previous
                     .measure_sized(
                         &command.text,
                         command.style,
-                        font_size,
+                        overrides,
                         command.bounds.width,
                     )
                     .or_else(|| {
                         shaper.measure_sized(
                             &command.text,
                             command.style,
-                            font_size,
+                            overrides,
                             command.bounds.width,
                             dpi,
                             typography_scale,
@@ -231,7 +233,7 @@ impl NativeTextShapingBackend {
                     measurements.insert_sized(
                         &command.text,
                         command.style,
-                        font_size,
+                        overrides,
                         command.bounds.width,
                         size,
                     );

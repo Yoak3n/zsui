@@ -23,6 +23,14 @@ pub struct WindowSpec {
     pub icon_path: Option<String>,
     pub menu: Option<MenuSpec>,
     pub content: Option<UiNode>,
+    /// The placement to restore, typically saved from a previous run's
+    /// `ZsWindowState::placement`. Ignored when off every monitor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::ZsWindowPlacement>,
+    /// Registers this window as the running instance of application `id`,
+    /// so `zs_forward_to_running_instance(id)` in a second launch finds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_instance: Option<String>,
 }
 
 pub type Window = WindowSpec;
@@ -61,7 +69,19 @@ impl WindowSpec {
             icon_path: None,
             menu: None,
             content: None,
+            placement: None,
+            single_instance: None,
         }
+    }
+
+    pub fn placement(mut self, placement: crate::ZsWindowPlacement) -> Self {
+        self.placement = Some(placement);
+        self
+    }
+
+    pub fn single_instance(mut self, id: impl Into<String>) -> Self {
+        self.single_instance = Some(id.into());
+        self
     }
 
     pub fn size(mut self, width: u32, height: u32) -> Self {

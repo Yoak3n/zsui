@@ -70,6 +70,7 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
         WM_NCDESTROY => {
             #[cfg(feature = "tray")]
             clear_windows_win32_view_status_item(hwnd);
+            clear_windows_win32_view_host_integration(hwnd);
             clear_windows_win32_status_item_routes_for_owner(hwnd);
             let state = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0)
                 as *mut WindowsWindowCreateParams;
@@ -214,6 +215,40 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
             } else {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_SETCURSOR
+            if (lparam as u32 & 0xffff) == windows_sys::Win32::UI::WindowsAndMessaging::HTCLIENT
+                && apply_windows_win32_view_cursor(hwnd) =>
+        {
+            1
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_DROPFILES => {
+            let paths = take_windows_win32_dropped_files(wparam);
+            if !paths.is_empty() {
+                dispatch_windows_win32_host_event(hwnd, crate::ZsHostEvent::FilesDropped(paths));
+            }
+            0
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_COPYDATA
+            if handle_windows_win32_single_instance_copydata(hwnd, lparam) =>
+        {
+            1
+        }
+        #[cfg(feature = "window-chrome")]
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_EXITSIZEMOVE => {
+            dispatch_windows_win32_window_view_window_state(hwnd, IsZoomed(hwnd) != 0);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_SETTINGCHANGE if windows_win32_setting_change_is_theme(lparam) => {
+            dispatch_windows_win32_host_event(
+                hwnd,
+                crate::ZsHostEvent::SystemThemeChanged(windows_system_theme_mode()),
+            );
+            if let Some(plan) = window_draw_plan(hwnd) {
+                apply_windows_win32_window_theme(hwnd, plan.theme_mode);
+                InvalidateRect(hwnd, null(), 0);
+            }
+            0
         }
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
             if let Some(plan) = window_draw_plan(hwnd) {
@@ -381,6 +416,11 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         },
         WM_COMMAND => {
+            #[cfg(feature = "shell-integration")]
+            if let Some(command) = windows_win32_taskbar_command(hwnd, wparam) {
+                dispatch_windows_win32_app_command(hwnd, command);
+                return 0;
+            }
             let native_id = (wparam & 0xffff) as u32;
             if dispatch_windows_win32_window_menu_command(hwnd, native_id).is_some() {
                 0
@@ -432,6 +472,18 @@ pub unsafe extern "system" fn zsui_win32_default_window_proc(
             } else {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+        }
+        #[cfg(feature = "shell-integration")]
+        ZSUI_WIN32_MEDIA_COMMAND_MESSAGE => {
+            if let Some(command) = windows_win32_media_command(wparam) {
+                dispatch_windows_win32_host_event(hwnd, crate::ZsHostEvent::Media(command));
+            }
+            0
+        }
+        #[cfg(feature = "shell-integration")]
+        message if message == windows_win32_taskbar_button_created_message() => {
+            windows_win32_taskbar_button_created(hwnd);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_PAINT => paint_no_flicker_background(hwnd),
         WM_PRINTCLIENT => paint_window_client_to_dc(hwnd, wparam as _),

@@ -160,10 +160,8 @@ pub fn set_windows_win32_window_shell_input_route(
         });
     }
     drop(routes);
-    set_windows_win32_window_draw_plan(hwnd, plan);
-    unsafe {
-        InvalidateRect(hwnd, null(), 0);
-    }
+    let damage = update_windows_win32_window_draw_plan(hwnd, plan);
+    invalidate_windows_win32_draw_damage(hwnd, damage);
     true
 }
 
@@ -270,10 +268,8 @@ fn dispatch_windows_win32_window_shell_update(
     };
 
     if let Some(plan) = plan {
-        set_windows_win32_window_draw_plan(hwnd, plan);
-        unsafe {
-            InvalidateRect(hwnd, null(), 0);
-        }
+        let damage = update_windows_win32_window_draw_plan(hwnd, plan);
+        invalidate_windows_win32_draw_damage(hwnd, damage);
     }
     Some(result)
 }

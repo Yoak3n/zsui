@@ -272,6 +272,29 @@ fn post_windows_native_view_input(
         NativeViewSmokeInput::WindowCloseRequest => unsafe {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
         },
+        NativeViewSmokeInput::Wait(milliseconds) => {
+            pump_windows_messages_for(std::time::Duration::from_millis(*milliseconds));
+        }
+    }
+}
+
+/// Runs the thread's message loop for `duration`, so invalidations, timers
+/// and posted messages are handled between scripted inputs.
+#[cfg(all(windows, feature = "windows-win32"))]
+fn pump_windows_messages_for(duration: std::time::Duration) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+    let until = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < until {
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
     }
 }
 

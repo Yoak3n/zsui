@@ -2207,6 +2207,8 @@ struct ViewTextMeasurementKey {
     style_fingerprint: u64,
     /// Explicit font size in hundredths of a DIP; zero is the role's size.
     font_size: u32,
+    /// The explicit font family; `None` is the role's family.
+    font_family: Option<crate::ZsFontFamily>,
     max_width: i32,
 }
 
@@ -2267,20 +2269,20 @@ impl ViewTextMeasurements {
         max_width: i32,
         size: crate::Size,
     ) {
-        self.insert_sized(text, style, None, max_width, size);
+        self.insert_sized(text, style, crate::ZsTextOverrides::NONE, max_width, size);
     }
 
-    /// Records a measurement of text drawn at an explicit font size, as a
-    /// Canvas text run with `size` is drawn.
+    /// Records a measurement of text drawn with explicit overrides, as a
+    /// Canvas text run with a size or family is drawn.
     pub(crate) fn insert_sized(
         &mut self,
         text: impl AsRef<str>,
         style: crate::SemanticTextStyle,
-        font_size: Option<crate::ZsFontSize>,
+        overrides: crate::ZsTextOverrides,
         max_width: i32,
         size: crate::Size,
     ) {
-        let key = self.key(text.as_ref(), style, font_size, max_width);
+        let key = self.key(text.as_ref(), style, overrides, max_width);
         let size = size.clamp_non_negative();
         self.next_use = self.next_use.saturating_add(1);
         self.entries.insert(
@@ -2310,18 +2312,18 @@ impl ViewTextMeasurements {
         style: crate::SemanticTextStyle,
         max_width: i32,
     ) -> Option<crate::Size> {
-        self.measure_sized(text, style, None, max_width)
+        self.measure_sized(text, style, crate::ZsTextOverrides::NONE, max_width)
     }
 
     pub(crate) fn measure_sized(
         &self,
         text: &str,
         style: crate::SemanticTextStyle,
-        font_size: Option<crate::ZsFontSize>,
+        overrides: crate::ZsTextOverrides,
         max_width: i32,
     ) -> Option<crate::Size> {
         self.entries
-            .get(&self.key(text, style, font_size, max_width))
+            .get(&self.key(text, style, overrides, max_width))
             .map(|entry| entry.size)
     }
 
@@ -2329,7 +2331,7 @@ impl ViewTextMeasurements {
         &self,
         text: &str,
         style: crate::SemanticTextStyle,
-        font_size: Option<crate::ZsFontSize>,
+        overrides: crate::ZsTextOverrides,
         max_width: i32,
     ) -> ViewTextMeasurementKey {
         use std::hash::{BuildHasher, Hasher};
@@ -2343,7 +2345,10 @@ impl ViewTextMeasurements {
             text_fingerprint_b: fingerprint_b.finish(),
             text_utf8_len: text.len(),
             style_fingerprint: semantic_text_style_fingerprint(style),
-            font_size: font_size.map_or(0, |size| (size.dip() * 100.0).round() as u32),
+            font_size: overrides
+                .size
+                .map_or(0, |size| (size.dip() * 100.0).round() as u32),
+            font_family: overrides.family,
             max_width: max_width.max(0),
         }
     }

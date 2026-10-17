@@ -174,18 +174,27 @@ impl WindowsWin32ViewInputRoute {
         self.adapt_shared_report(report, WindowsSharedInputKind::Background)
     }
 
+    fn dispatch_host_event(
+        &mut self,
+        event: crate::ZsHostEvent,
+    ) -> WindowsWin32ViewInputDispatchReport {
+        let report = self.shared_runtime.dispatch_host_event(event);
+        self.adapt_shared_report(report, WindowsSharedInputKind::Background)
+    }
+
     #[cfg(feature = "window-chrome")]
-    fn dispatch_window_state(&mut self, maximized: bool) -> WindowsWin32ViewInputDispatchReport {
-        if self.window_maximized == Some(maximized) {
+    fn dispatch_window_state(
+        &mut self,
+        state: crate::ZsWindowState,
+    ) -> WindowsWin32ViewInputDispatchReport {
+        if self.window_maximized == Some(state) {
             return self.adapt_shared_report(
                 crate::native::NativeViewInputDispatchReport::default(),
                 WindowsSharedInputKind::Background,
             );
         }
-        self.window_maximized = Some(maximized);
-        let report = self
-            .shared_runtime
-            .dispatch_window_state(crate::ZsWindowState { maximized });
+        self.window_maximized = Some(state);
+        let report = self.shared_runtime.dispatch_window_state(state);
         let mut report = self.adapt_shared_report(report, WindowsSharedInputKind::Background);
         report.handled = true;
         report
@@ -378,9 +387,10 @@ impl WindowsWin32ViewInputRoute {
 
     fn adapt_shared_report(
         &mut self,
-        mut shared: crate::native::NativeViewInputDispatchReport,
+        shared: crate::native::NativeViewInputDispatchReport,
         kind: WindowsSharedInputKind,
     ) -> WindowsWin32ViewInputDispatchReport {
+        let mut shared = self.shared_runtime.sync_focus_change(shared);
         let redraw = shared.redraw_plan.take();
         if let Some(plan) = redraw {
             self.pending_draw_plan = Some(plan);
@@ -390,7 +400,7 @@ impl WindowsWin32ViewInputRoute {
         let window_commands = std::mem::take(&mut shared.window_commands);
         #[cfg(feature = "window-chrome")]
         self.pending_window_commands
-            .extend(window_commands.iter().copied());
+            .extend(window_commands.iter().cloned());
         self.sync_shared_host_state();
 
         let target = kind.target();

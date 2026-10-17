@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A window-management request raised from a View update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ZsWindowCommand {
     /// Minimizes the window to the taskbar or dock.
     Minimize,
@@ -22,6 +22,14 @@ pub enum ZsWindowCommand {
     Hide,
     /// Shows, restores and activates the window.
     Show,
+    /// Shows a system notification from the window's notification-area
+    /// icon (a toast on current Windows). Requires a declared status item.
+    /// `silent` suppresses the notification sound.
+    Notify {
+        title: String,
+        body: String,
+        silent: bool,
+    },
 }
 
 /// The window placement an application-drawn title bar mirrors, for example
@@ -31,4 +39,8 @@ pub enum ZsWindowCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct ZsWindowState {
     pub maximized: bool,
+    /// The restored bounds and maximized state, for saving the window's
+    /// placement and restoring it with `NativeWindowBuilder::placement`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::ZsWindowPlacement>,
 }

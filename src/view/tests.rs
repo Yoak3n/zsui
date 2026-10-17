@@ -154,6 +154,12 @@ mod tests {
         CanvasPointer(crate::ZsCanvasPointerEvent),
         #[cfg(feature = "window-chrome")]
         WindowState(crate::ZsWindowState),
+        Dropped(Vec<std::path::PathBuf>),
+        Theme(crate::ZsuiThemeMode),
+        Media(crate::ZsMediaCommand),
+        Focused(bool),
+        #[cfg(feature = "canvas")]
+        Wheel(Option<u64>, f32),
         #[cfg(feature = "textbox")]
         NameChanged(String),
         #[cfg(feature = "textbox")]
@@ -6614,13 +6620,338 @@ fn active_progress_ring_reuses_native_progress_semantics_and_inactive_ring_is_hi
         view.event(
             &mut cx,
             &ViewEvent::WindowStateChanged {
-                state: crate::ZsWindowState { maximized: true },
+                state: crate::ZsWindowState {
+                    maximized: true,
+                    placement: None,
+                },
             },
         );
         let messages = cx.into_messages();
         assert!(matches!(
             messages.as_slice(),
-            [Msg::WindowState(crate::ZsWindowState { maximized: true })]
+            [Msg::WindowState(crate::ZsWindowState {
+                maximized: true,
+                placement: None,
+            })]
         ));
+    }
+
+    fn laid_out<M: Clone>(mut view: ViewNode<M>, width: i32, height: i32) -> ViewNode<M> {
+        view.layout(&mut ViewLayoutCx::new(
+            Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            Dpi::standard(),
+        ));
+        view
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_regions_declare_cursors_and_labels() {
+        let widget = WidgetId::new(301);
+        let mut scene = crate::ZsCanvasScene::new();
+        scene.push_hover_region(1, crate::ZsCanvasRect::new(Dp::new(0.0), Dp::new(0.0), Dp::new(40.0), Dp::new(40.0)));
+        scene.push_region(
+            crate::ZsCanvasRegion::new(
+                2,
+                crate::ZsCanvasRect::new(Dp::new(50.0), Dp::new(0.0), Dp::new(40.0), Dp::new(40.0)),
+            )
+            .cursor(crate::ZsCursor::Pointer)
+            .label("Play"),
+        );
+        let view: ViewNode<Msg> = laid_out(
+            column([canvas(scene)
+                .id(widget)
+                .cursor(crate::ZsCursor::Move)
+                .on_canvas_pointer(Msg::CanvasPointer)]),
+            200,
+            100,
+        );
+        // A region's own cursor wins; other places use the node cursor.
+        assert_eq!(
+            view.cursor_for(widget, Point { x: 60, y: 10 }),
+            Some(crate::ZsCursor::Pointer)
+        );
+        assert_eq!(
+            view.cursor_for(widget, Point { x: 10, y: 10 }),
+            Some(crate::ZsCursor::Move)
+        );
+        assert_eq!(
+            view.cursor_for(WidgetId::new(999), Point { x: 10, y: 10 }),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "canvas", feature = "tooltip"))]
+    fn labeled_canvas_regions_show_tooltips() {
+        let widget = WidgetId::new(302);
+        let mut scene = crate::ZsCanvasScene::new();
+        scene.push_region(
+            crate::ZsCanvasRegion::new(
+                7,
+                crate::ZsCanvasRect::new(Dp::new(10.0), Dp::new(10.0), Dp::new(30.0), Dp::new(30.0)),
+            )
+            .label("Next track"),
+        );
+        scene.push_region(
+            crate::ZsCanvasRegion::new(
+                8,
+                crate::ZsCanvasRect::new(Dp::new(60.0), Dp::new(10.0), Dp::new(30.0), Dp::new(30.0)),
+            )
+            .label("Visible text already says it")
+            .without_tooltip(),
+        );
+        let view: ViewNode<Msg> = laid_out(
+            column([canvas(scene).id(widget).on_canvas_pointer(Msg::CanvasPointer)]),
+            200,
+            100,
+        );
+        let plan = view.interaction_plan();
+        let tooltip = plan
+            .tooltip_target_at(Point { x: 20, y: 20 })
+            .expect("the labeled region has a tooltip");
+        assert_eq!(tooltip.spec.text, "Next track");
+        assert_eq!(
+            tooltip.widget,
+            crate::canvas::zs_canvas_region_widget(widget, 7)
+        );
+        assert!(plan.tooltip_target_at(Point { x: 70, y: 20 }).is_none());
+    }
+
+    #[test]
+    #[cfg(all(feature = "canvas", feature = "accessibility"))]
+    fn labeled_canvas_regions_are_accessible_buttons() {
+        let widget = WidgetId::new(303);
+        let mut scene = crate::ZsCanvasScene::new();
+        scene.push_region(
+            crate::ZsCanvasRegion::new(
+                3,
+                crate::ZsCanvasRect::new(Dp::new(20.0), Dp::new(0.0), Dp::new(40.0), Dp::new(20.0)),
+            )
+            .label("Play"),
+        );
+        let view: ViewNode<Msg> = laid_out(
+            column([canvas(scene).id(widget).on_canvas_pointer(Msg::CanvasPointer)]),
+            200,
+            100,
+        );
+        let plan = view.interaction_plan();
+        let region = crate::canvas::zs_canvas_region_widget(widget, 3);
+        let node = plan
+            .accessibility_nodes
+            .iter()
+            .find(|node| node.widget == region)
+            .expect("the labeled region is in the accessibility tree");
+        assert_eq!(node.role, crate::ZsAccessibilityRole::Button);
+        assert_eq!(node.label.as_deref(), Some("Play"));
+        assert_eq!(plan.accessibility_node_bounds(region).map(|b| b.x), Some(20));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_text_runs_carry_a_font_family() {
+        let scene = crate::ZsCanvasScene::new().with(
+            crate::ZsCanvasPrimitive::text_run(
+                "03:42",
+                crate::ZsCanvasRect::new(Dp::new(0.0), Dp::new(0.0), Dp::new(80.0), Dp::new(20.0)),
+                crate::SemanticTextStyle::body(),
+                None,
+                Some(Dp::new(13.0)),
+            )
+            .with_font_family("Bahnschrift"),
+        );
+        let plan = crate::zs_canvas_native_draw_plan(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 20,
+            },
+            &scene,
+            Dpi::standard(),
+        );
+        let text = plan
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                crate::NativeDrawCommand::Text(text) => Some(text),
+                _ => None,
+            })
+            .expect("the run becomes a text command");
+        assert_eq!(text.family.as_deref(), Some("Bahnschrift"));
+        let mut style = crate::TextStyle {
+            font_family: "Segoe UI".into(),
+            size: 14.0,
+            line_height: 20.0,
+            semantic_role: None,
+            weight: crate::TextWeight::Regular,
+            color: crate::Color::rgb(0, 0, 0),
+            horizontal_align: crate::HorizontalAlign::Start,
+            vertical_align: crate::VerticalAlign::Start,
+            wrap: crate::TextWrap::NoWrap,
+            ellipsis: false,
+        };
+        text.apply_style_overrides(&mut style);
+        assert_eq!(style.font_family, "Bahnschrift");
+        assert_eq!(style.size, 13.0);
+    }
+
+    #[test]
+    fn text_measurements_key_on_the_font_family() {
+        let mut measurements = ViewTextMeasurements::default();
+        let style = crate::SemanticTextStyle::body();
+        let display = crate::ZsTextOverrides {
+            size: None,
+            family: Some(crate::ZsFontFamily::new("Bahnschrift")),
+        };
+        measurements.insert_sized(
+            "12:34",
+            style,
+            display,
+            0,
+            crate::Size {
+                width: 40,
+                height: 18,
+            },
+        );
+        assert!(measurements.measure_sized("12:34", style, display, 0).is_some());
+        assert!(measurements
+            .measure_sized("12:34", style, crate::ZsTextOverrides::NONE, 0)
+            .is_none());
+        assert_eq!(
+            crate::ZsFontFamily::new("Bahnschrift"),
+            crate::ZsFontFamily::new("Bahnschrift")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn host_events_reach_the_first_handler_and_declarations_are_collected() {
+        let view: ViewNode<Msg> = column([
+            canvas(crate::ZsCanvasScene::new())
+                .on_files_dropped(Msg::Dropped)
+                .on_media_command(Msg::Media)
+                .media_session(crate::ZsMediaSession::new("Song").artist("Artist").playing(true))
+                .taskbar(crate::ZsTaskbarSpec::new().progress(crate::ZsTaskbarProgress::Normal(0.5))),
+            canvas(crate::ZsCanvasScene::new()).on_system_theme_change(Msg::Theme),
+        ]);
+        let mut view = view;
+        let mut cx = ViewEventCx::new();
+        view.event(
+            &mut cx,
+            &ViewEvent::Host(crate::ZsHostEvent::FilesDropped(vec![std::path::PathBuf::from(
+                "a.flac",
+            )])),
+        );
+        view.event(
+            &mut cx,
+            &ViewEvent::Host(crate::ZsHostEvent::SystemThemeChanged(
+                crate::ZsuiThemeMode::Dark,
+            )),
+        );
+        view.event(
+            &mut cx,
+            &ViewEvent::Host(crate::ZsHostEvent::Media(crate::ZsMediaCommand::Next)),
+        );
+        // No handler for a second launch: nothing is emitted.
+        view.event(
+            &mut cx,
+            &ViewEvent::Host(crate::ZsHostEvent::SecondInstance(Vec::new())),
+        );
+        assert_eq!(
+            cx.into_messages(),
+            vec![
+                Msg::Dropped(vec![std::path::PathBuf::from("a.flac")]),
+                Msg::Theme(crate::ZsuiThemeMode::Dark),
+                Msg::Media(crate::ZsMediaCommand::Next),
+            ]
+        );
+        let declared = view.declared_host();
+        assert!(declared.accepts_files);
+        assert_eq!(
+            declared.media_session.map(|session| session.title),
+            Some("Song".to_string())
+        );
+        assert_eq!(
+            declared.taskbar.map(|taskbar| taskbar.progress),
+            Some(crate::ZsTaskbarProgress::Normal(0.5))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn refresh_every_drives_background_rebuilds() {
+        let still: ViewNode<Msg> = column([canvas(crate::ZsCanvasScene::new())]);
+        assert_eq!(still.background_poll_interval_ms(), None);
+        let animated: ViewNode<Msg> = column([
+            canvas(crate::ZsCanvasScene::new()).refresh_every(std::time::Duration::from_millis(33)),
+            canvas(crate::ZsCanvasScene::new()).refresh_every(std::time::Duration::from_millis(2)),
+        ]);
+        // The fastest request wins, but never below 8 ms.
+        assert_eq!(animated.background_poll_interval_ms(), Some(8));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_wheel_reports_the_region_or_declines() {
+        let widget = WidgetId::new(304);
+        let mut scene = crate::ZsCanvasScene::new();
+        scene.push_hover_region(
+            5,
+            crate::ZsCanvasRect::new(Dp::new(0.0), Dp::new(0.0), Dp::new(50.0), Dp::new(50.0)),
+        );
+        let mut view: ViewNode<Msg> = laid_out(
+            column([canvas(scene)
+                .id(widget)
+                .on_canvas_pointer(Msg::CanvasPointer)
+                .on_canvas_wheel_with(|event| {
+                    event
+                        .region
+                        .map(|region| Msg::Wheel(Some(region), event.delta.0))
+                })]),
+            200,
+            100,
+        );
+        let inside = view
+            .canvas_wheel_event(widget, Point { x: 10, y: 10 }, Dp::new(40.0))
+            .expect("a region under the pointer takes the wheel");
+        assert_eq!(inside.region, Some(5));
+        // Outside every region the handler declines, so a Scroll scrolls.
+        assert!(view
+            .canvas_wheel_event(widget, Point { x: 120, y: 10 }, Dp::new(40.0))
+            .is_none());
+        let mut cx = ViewEventCx::new();
+        view.event(
+            &mut cx,
+            &ViewEvent::CanvasWheel {
+                widget,
+                event: inside,
+            },
+        );
+        assert_eq!(cx.into_messages(), vec![Msg::Wheel(Some(5), 40.0)]);
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn focus_changes_reach_the_widget_handler() {
+        let widget = WidgetId::new(305);
+        let mut view: ViewNode<Msg> = column([canvas(crate::ZsCanvasScene::new())
+            .id(widget)
+            .on_focus_change(Msg::Focused)]);
+        let mut cx = ViewEventCx::new();
+        view.event(&mut cx, &ViewEvent::FocusChanged { widget, focused: true });
+        view.event(
+            &mut cx,
+            &ViewEvent::FocusChanged {
+                widget: WidgetId::new(1),
+                focused: false,
+            },
+        );
+        assert_eq!(cx.into_messages(), vec![Msg::Focused(true)]);
     }
 }

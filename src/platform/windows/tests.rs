@@ -486,9 +486,9 @@ mod tests {
             .expect("stateful view should own a live runtime")
             .clone();
         let mut route = WindowsWin32ViewInputRoute::from_live_view(runtime);
-        assert!(route.dispatch_window_state(true).handled);
-        assert!(!route.dispatch_window_state(true).handled, "same placement is ignored");
-        assert!(route.dispatch_window_state(false).handled);
+        assert!(route.dispatch_window_state(crate::ZsWindowState { maximized: true, placement: None }).handled);
+        assert!(!route.dispatch_window_state(crate::ZsWindowState { maximized: true, placement: None }).handled, "same placement is ignored");
+        assert!(route.dispatch_window_state(crate::ZsWindowState { maximized: false, placement: None }).handled);
         assert_eq!(seen.load(Ordering::SeqCst), 11);
     }
 
@@ -4357,5 +4357,68 @@ mod tests {
                 NativeTransientWindowHostOperation::DestroyTransientWindow,
             ]
         );
+    }
+
+    #[test]
+    fn theme_setting_changes_are_recognized() {
+        let theme: Vec<u16> = "ImmersiveColorSet\0".encode_utf16().collect();
+        let other: Vec<u16> = "Environment\0".encode_utf16().collect();
+        let longer: Vec<u16> = "ImmersiveColorSetX\0".encode_utf16().collect();
+        assert!(windows_win32_setting_change_is_theme(theme.as_ptr() as LPARAM));
+        assert!(!windows_win32_setting_change_is_theme(other.as_ptr() as LPARAM));
+        assert!(!windows_win32_setting_change_is_theme(longer.as_ptr() as LPARAM));
+        assert!(!windows_win32_setting_change_is_theme(0));
+    }
+
+    #[test]
+    fn single_instance_names_are_sanitized() {
+        assert_eq!(windows_win32_single_instance_key("lx-native"), "lx-native");
+        assert_eq!(windows_win32_single_instance_key("my app/1"), "my_app_1");
+    }
+
+    #[test]
+    fn cursors_map_to_system_cursors() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_HAND, IDC_IBEAM};
+        assert_eq!(windows_win32_cursor_resource(crate::ZsCursor::Pointer), IDC_HAND);
+        assert_eq!(windows_win32_cursor_resource(crate::ZsCursor::Text), IDC_IBEAM);
+    }
+
+    #[test]
+    #[cfg(feature = "shell-integration")]
+    fn media_buttons_map_to_commands() {
+        assert_eq!(windows_win32_media_command(4), Some(crate::ZsMediaCommand::Next));
+        assert_eq!(windows_win32_media_command(2), Some(crate::ZsMediaCommand::Pause));
+        assert_eq!(windows_win32_media_command(99), None);
+    }
+
+    #[test]
+    #[cfg(feature = "shell-integration")]
+    fn only_thumbnail_clicks_are_taskbar_commands() {
+        let hwnd = 0x1234 as HWND;
+        ZSUI_WIN32_TASKBARS.with(|all| {
+            all.borrow_mut().push(WindowsWin32TaskbarState {
+                owner: hwnd as isize,
+                list: None,
+                buttons_added: true,
+                spec: Some(crate::ZsTaskbarSpec::new().button(crate::ZsTaskbarButton::new(
+                    'x',
+                    "Next",
+                    Command::custom("next"),
+                ))),
+                icons: Vec::new(),
+            });
+        });
+        let clicked = ((::windows::Win32::UI::Shell::THBN_CLICKED as usize) << 16)
+            | ZSUI_WIN32_TASKBAR_BUTTON_BASE as usize;
+        assert_eq!(
+            windows_win32_taskbar_command(hwnd, clicked),
+            Some(Command::custom("next"))
+        );
+        // A menu command with the same id is not a thumbnail click.
+        assert_eq!(
+            windows_win32_taskbar_command(hwnd, ZSUI_WIN32_TASKBAR_BUTTON_BASE as usize),
+            None
+        );
+        ZSUI_WIN32_TASKBARS.with(|all| all.borrow_mut().clear());
     }
 }

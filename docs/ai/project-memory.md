@@ -336,6 +336,48 @@ history remain authoritative for implementation status.
 - `ViewNode::chromeless()` draws a text input without its field background,
   border and focus indicator, so it can sit inside an application-drawn field;
   text, placeholder, caret and selection remain.
+- Desktop integration follows the same declaration pattern
+  (`desktop_integration.rs`): `media_session` (Windows SMTC: media keys,
+  volume flyout, lock screen; `on_media_command`), `taskbar` (up to seven
+  thumbnail buttons whose commands reach the app-command mapper, plus
+  progress), `notification` (shown once per new key from the declared tray
+  icon; Windows needs `hBalloonIcon` for `NIIF_USER` or the shell accepts the
+  request and shows nothing) and `on_files_dropped` (enables
+  `DragAcceptFiles`). Declarations sync after every rebuild that produces a
+  draw plan, including while the window is hidden. Host events
+  (`ZsHostEvent`: theme change, dropped files, second launch, media command)
+  reach the first handler in preorder and work while the View is suspended.
+  SMTC and taskbar code is the opt-in `shell-integration` feature
+  (`windows` crate); other hosts ignore these declarations for now.
+- Single instance: `zs_forward_to_running_instance(id)` early in `main`, then
+  `NativeWindowBuilder::single_instance(id)`; the second launch's arguments
+  arrive as `ZsHostEvent::SecondInstance` (WM_COPYDATA) and the window comes
+  to the front. `ZsWindowState::placement` reports the restored rectangle for
+  saving; `.placement(...)` restores it if it is still on a monitor.
+- Canvas regions (`ZsCanvasRegion`) carry a `ZsCursor` and an optional label
+  that becomes a tooltip and an accessibility button; `on_canvas_wheel_with`
+  lets a Canvas take wheel input over a region or decline it to the scroll
+  parent; `on_focus_change` reports a widget's keyboard focus;
+  `refresh_every` drives time-based rebuilds. Text runs take a font family.
+- Canvas also draws antialiased polylines, polygons and two-stop linear
+  gradients. GDI+ fills use `PixelOffsetModeHalf` so integer edges fall on
+  pixel boundaries (round rect strokes are inset half a pixel), and smooth
+  image scaling uses a TileFlipXY wrap so scaled bitmaps keep opaque edges.
+- Win32 repaints only what changed: `native_draw_plan_damage` compares the
+  new draw plan with the previous one (command by command when the shape
+  is unchanged, otherwise the differing middle after the shared head and
+  tail), invalidates those rectangles — or nothing when the plans are equal
+  — and `WM_PAINT` buffers the update area and skips commands outside the
+  update region. Clip-depth changes, a new theme or damage over most of the
+  window repaint everything. This took a music player redrawing lyrics at
+  20 Hz from ~20% to ~3% of a core; a pixel test checks partial repaints
+  equal full ones.
+- The Windows Rust text path ellipsizes single lines itself (longest
+  grapheme prefix plus "…", cached per text and box) instead of falling
+  back to GDI, whose fallback font for a missing family drew truncated text
+  at a different size.
+- Scripted smoke runs can wait between inputs (`native_view_wait`, Windows
+  pumps messages meanwhile), so data can load before the next click.
 - Custom title bars are the opt-in `window-chrome` feature: the window keeps
   native resize, snap and taskbar behavior, the View marks caption areas with
   `window_drag_region()` (inside a drag-region Canvas only its hover regions are

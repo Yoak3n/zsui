@@ -978,6 +978,10 @@ pub enum NativeViewSmokeInput {
         delta_y: i32,
     },
     WindowCloseRequest,
+    /// Lets the window process events for this many milliseconds before the
+    /// next input, for example while data loads. Hosts that cannot run
+    /// their event loop here skip it.
+    Wait(u64),
 }
 
 /// Privacy-preserving metadata for one scripted native text input.
@@ -1272,6 +1276,14 @@ impl NativeWindowSmokeRunOptions {
     pub fn native_window_close_request(mut self) -> Self {
         self.native_view_inputs
             .push(NativeViewSmokeInput::WindowCloseRequest);
+        self
+    }
+
+    /// Waits `milliseconds` before the next scripted input while the window
+    /// keeps handling events.
+    pub fn native_view_wait(mut self, milliseconds: u64) -> Self {
+        self.native_view_inputs
+            .push(NativeViewSmokeInput::Wait(milliseconds));
         self
     }
 }
@@ -1675,6 +1687,8 @@ pub(crate) struct NativeViewInputRuntime {
     modal_restore_focus: Option<crate::WidgetId>,
     #[cfg(feature = "tooltip")]
     tooltip: crate::tooltip::ZsTooltipRuntime,
+    /// The widget last reported through `on_focus_change`.
+    focus_notified: Option<crate::WidgetId>,
     #[cfg(feature = "menu-flyout")]
     menu_flyout_hover: crate::menu_flyout::ZsMenuFlyoutHoverRuntime,
     #[cfg(feature = "toast")]
@@ -2045,6 +2059,7 @@ impl NativeViewInputRuntime {
             modal_restore_focus: None,
             #[cfg(feature = "tooltip")]
             tooltip: crate::tooltip::ZsTooltipRuntime::default(),
+            focus_notified: None,
             #[cfg(feature = "menu-flyout")]
             menu_flyout_hover: crate::menu_flyout::ZsMenuFlyoutHoverRuntime::default(),
             #[cfg(feature = "toast")]
@@ -2451,6 +2466,63 @@ impl NativeViewInputRuntime {
             .or_else(|| self.interaction_plan.clone())
     }
 
+    /// The pointer cursor for `point`: what the interactive target there
+    /// (or a Canvas region) declares, an I-beam over text inputs, and the
+    /// default arrow elsewhere.
+    pub(crate) fn cursor_at(&self, point: Point) -> crate::ZsCursor {
+        let Some(target) = self
+            .current_interaction_plan()
+            .and_then(|plan| plan.hit_target_at(point))
+        else {
+            return crate::ZsCursor::Arrow;
+        };
+        let declared = self
+            .live_view
+            .as_ref()
+            .and_then(|runtime| runtime.cursor_for(target.widget, point))
+            .or_else(|| {
+                self.ui_command_view
+                    .as_ref()
+                    .and_then(|view| view.cursor_for(target.widget, point))
+            });
+        declared.unwrap_or_else(|| native_default_cursor(target.kind))
+    }
+
+    /// The live View's host declarations (media session, taskbar, file
+    /// drop); `None` without a live View or while it is suspended.
+    pub(crate) fn declared_host(&self) -> Option<crate::ZsHostDeclarations> {
+        self.live_view
+            .as_ref()
+            .and_then(|runtime| runtime.declared_host())
+    }
+
+    /// Reports a keyboard focus change to widgets with `on_focus_change`.
+    pub(crate) fn sync_focus_change(
+        &mut self,
+        report: NativeViewInputDispatchReport,
+    ) -> NativeViewInputDispatchReport {
+        let current = self.focused_widget;
+        if current == self.focus_notified {
+            return report;
+        }
+        let previous = std::mem::replace(&mut self.focus_notified, current);
+        let mut report = report;
+        for (widget, focused) in [(previous, false), (current, true)] {
+            let Some(widget) = widget else {
+                continue;
+            };
+            let wants = self
+                .live_view
+                .as_ref()
+                .is_some_and(|runtime| runtime.has_focus_change_handler(widget));
+            if wants {
+                report =
+                    self.dispatch_view_event(ViewEvent::FocusChanged { widget, focused }, report);
+            }
+        }
+        report
+    }
+
     /// Whether `point` is uncovered caption area of a custom title bar.
     /// Hosts call this from their non-client hit test, so live Views answer
     /// without building a full interaction plan for every pointer move.
@@ -2617,7 +2689,19 @@ impl NativeViewInputRuntime {
             .current_interaction_plan()
             .and_then(|plan| plan.hit_target_for_widget(widget))
         else {
-            return NativeViewInputDispatchReport::default();
+            // Synthetic nodes such as labeled Canvas regions are clicked at
+            // their center.
+            let Some(bounds) = self
+                .current_interaction_plan()
+                .and_then(|plan| plan.accessibility_node_bounds(widget))
+            else {
+                return NativeViewInputDispatchReport::default();
+            };
+            let center = Point {
+                x: bounds.x.saturating_add(bounds.width.max(1) / 2),
+                y: bounds.y.saturating_add(bounds.height.max(1) / 2),
+            };
+            return self.dispatch_pointer_click(center);
         };
         self.dispatch_pointer_click(Point {
             x: target
@@ -6873,6 +6957,25 @@ impl NativeViewInputRuntime {
             return report;
         };
 
+        #[cfg(feature = "canvas")]
+        if target.kind == crate::ViewHitTargetKind::Canvas {
+            if let Some(event) = self
+                .live_view
+                .as_ref()
+                .and_then(|runtime| runtime.canvas_wheel_event(target.widget, point, delta_y))
+            {
+                let mut report = report;
+                report.handled = true;
+                return self.dispatch_view_event(
+                    ViewEvent::CanvasWheel {
+                        widget: target.widget,
+                        event,
+                    },
+                    report,
+                );
+            }
+        }
+
         if target.kind == crate::ViewHitTargetKind::TextEditor
             && self.focused_widget == Some(target.widget)
             && delta_y.0 != 0.0
@@ -8505,7 +8608,7 @@ impl NativeViewInputRuntime {
             #[cfg(feature = "window-chrome")]
             report
                 .window_commands
-                .extend(update.window_commands.iter().copied());
+                .extend(update.window_commands.iter().cloned());
             focus_request = update.focus_request;
             if update.redraw {
                 report.redraw_plan = Some(live_view.draw_plan());
@@ -8808,6 +8911,31 @@ impl NativeViewInputRuntime {
         &mut self,
         command: Command,
     ) -> NativeViewInputDispatchReport {
+        let update = self
+            .live_view
+            .as_ref()
+            .map(|runtime| runtime.dispatch_app_command(&command));
+        self.apply_live_update(update, Some(command))
+    }
+
+    /// Delivers a host event (system theme, dropped files, a second launch,
+    /// a media key) to the View's handler, also while the View is suspended.
+    pub(crate) fn dispatch_host_event(
+        &mut self,
+        event: crate::ZsHostEvent,
+    ) -> NativeViewInputDispatchReport {
+        let update = self
+            .live_view
+            .as_ref()
+            .map(|runtime| runtime.dispatch_host_event(&event));
+        self.apply_live_update(update, None)
+    }
+
+    fn apply_live_update(
+        &mut self,
+        update: Option<crate::LiveViewUpdate>,
+        fallback: Option<Command>,
+    ) -> NativeViewInputDispatchReport {
         let mut report = NativeViewInputDispatchReport {
             hit_target_count: self.hit_target_count(),
             focused_widget: self.focused_widget.map(|widget| widget.0),
@@ -8817,10 +8945,6 @@ impl NativeViewInputRuntime {
         let mut text_edit_commands = Vec::new();
 
         let mut focus_request = None;
-        let update = self
-            .live_view
-            .as_ref()
-            .map(|runtime| runtime.dispatch_app_command(&command));
         let mut app_effect_executed = false;
         if let Some(update) = update.filter(|update| update.message_count > 0) {
             #[cfg(feature = "text-input-core")]
@@ -8835,7 +8959,7 @@ impl NativeViewInputRuntime {
             #[cfg(feature = "window-chrome")]
             report
                 .window_commands
-                .extend(update.window_commands.iter().copied());
+                .extend(update.window_commands.iter().cloned());
 
             if self.defer_app_command_execution {
                 self.pending_app_commands.extend(update.commands);
@@ -8872,20 +8996,22 @@ impl NativeViewInputRuntime {
                     report.redraw_plan = Some(runtime.draw_plan());
                 }
             }
-        } else if command == Command::Quit {
-            report.handled = true;
-            report.quit_requested = true;
-        } else if self.defer_app_command_execution {
-            report.app_command_count = 1;
-            self.pending_app_commands.push(command);
-        } else if let Some(executor) = self.app_command_executor.clone() {
-            report.app_command_count = 1;
-            match executor.dispatch(command) {
-                Ok(_) => {
-                    report.handled = true;
-                    app_effect_executed = true;
+        } else if let Some(command) = fallback {
+            if command == Command::Quit {
+                report.handled = true;
+                report.quit_requested = true;
+            } else if self.defer_app_command_execution {
+                report.app_command_count = 1;
+                self.pending_app_commands.push(command);
+            } else if let Some(executor) = self.app_command_executor.clone() {
+                report.app_command_count = 1;
+                match executor.dispatch(command) {
+                    Ok(_) => {
+                        report.handled = true;
+                        app_effect_executed = true;
+                    }
+                    Err(error) => report.errors.push(error.to_string()),
                 }
-                Err(error) => report.errors.push(error.to_string()),
             }
         }
 
@@ -9312,6 +9438,7 @@ pub(crate) fn native_view_smoke_input_dispatch_count(inputs: &[NativeViewSmokeIn
             NativeViewSmokeInput::Drag { .. }
             | NativeViewSmokeInput::DragWidget(_)
             | NativeViewSmokeInput::PointerDrag { .. } => 3,
+            NativeViewSmokeInput::Wait(_) => 0,
             _ => 1,
         })
         .sum()
@@ -9332,6 +9459,7 @@ pub(crate) fn record_native_view_input_reports(
             NativeViewSmokeInput::Drag { .. }
             | NativeViewSmokeInput::DragWidget(_)
             | NativeViewSmokeInput::PointerDrag { .. } => 3,
+            NativeViewSmokeInput::Wait(_) => 0,
             _ => 1,
         };
         let end = dispatch_index
@@ -9473,7 +9601,7 @@ pub(crate) fn record_native_view_input_reports(
                     report.native_view_unhandled_scroll_count += 1;
                 }
             }
-            NativeViewSmokeInput::WindowCloseRequest => {}
+            NativeViewSmokeInput::WindowCloseRequest | NativeViewSmokeInput::Wait(_) => {}
         }
         report.events.push(format!(
             "{backend}_proof_input:{}:{}",
@@ -9489,6 +9617,7 @@ pub(crate) fn record_native_view_input_reports(
                 NativeViewSmokeInput::KeyDown(_) => "key_down",
                 NativeViewSmokeInput::Scroll { .. } => "scroll",
                 NativeViewSmokeInput::WindowCloseRequest => "window_close_request",
+                NativeViewSmokeInput::Wait(_) => "wait",
             },
             if handled { "handled" } else { "unhandled" }
         ));
@@ -9818,6 +9947,19 @@ impl NativeWindowBuilder {
     #[cfg(feature = "window-chrome")]
     pub fn custom_title_bar(mut self, custom_title_bar: bool) -> Self {
         self.window = self.window.custom_title_bar(custom_title_bar);
+        self
+    }
+
+    /// Restores a placement saved from `ZsWindowState::placement`.
+    pub fn placement(mut self, placement: crate::ZsWindowPlacement) -> Self {
+        self.window = self.window.placement(placement);
+        self
+    }
+
+    /// Makes this window the running instance of application `id`; pair it
+    /// with `zs_forward_to_running_instance(id)` early in `main`.
+    pub fn single_instance(mut self, id: impl Into<String>) -> Self {
+        self.window = self.window.single_instance(id);
         self
     }
 
@@ -10219,6 +10361,16 @@ impl<ContentState> TypedNativeWindowBuilder<ContentState> {
     #[cfg(feature = "window-chrome")]
     pub fn custom_title_bar(mut self, custom_title_bar: bool) -> Self {
         self.inner = self.inner.custom_title_bar(custom_title_bar);
+        self
+    }
+
+    pub fn placement(mut self, placement: crate::ZsWindowPlacement) -> Self {
+        self.inner = self.inner.placement(placement);
+        self
+    }
+
+    pub fn single_instance(mut self, id: impl Into<String>) -> Self {
+        self.inner = self.inner.single_instance(id);
         self
     }
 
@@ -16378,5 +16530,21 @@ mod tests {
         assert!(keyboard
             .widget_color_picker_state(widget)
             .is_some_and(|state| state.expanded));
+    }
+}
+
+/// The cursor of an interactive target that declares none.
+fn native_default_cursor(kind: crate::ViewHitTargetKind) -> crate::ZsCursor {
+    match kind {
+        crate::ViewHitTargetKind::Textbox | crate::ViewHitTargetKind::TextEditor => {
+            crate::ZsCursor::Text
+        }
+        #[cfg(feature = "password-box")]
+        crate::ViewHitTargetKind::PasswordBox => crate::ZsCursor::Text,
+        #[cfg(feature = "number-box")]
+        crate::ViewHitTargetKind::NumberBox => crate::ZsCursor::Text,
+        #[cfg(feature = "auto-suggest")]
+        crate::ViewHitTargetKind::AutoSuggestBox => crate::ZsCursor::Text,
+        _ => crate::ZsCursor::Arrow,
     }
 }

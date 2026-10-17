@@ -28,6 +28,7 @@ trait LiveViewDriver: Send {
     fn interaction_plan(&self) -> ViewInteractionPlan;
     fn dispatch_event(&mut self, event: &ViewEvent) -> LiveViewUpdate;
     fn dispatch_app_command(&mut self, command: &Command) -> LiveViewUpdate;
+    fn dispatch_host_event(&mut self, event: &crate::ZsHostEvent) -> LiveViewUpdate;
     fn widget_text_value(&self, widget: WidgetId) -> Option<String>;
     #[cfg(feature = "text-input-core")]
     fn widget_editable_text_descriptor(
@@ -40,6 +41,16 @@ trait LiveViewDriver: Send {
     fn has_shortcut(&self, accelerator: crate::ZsAccelerator) -> bool;
     #[cfg(feature = "tray")]
     fn declared_status_item(&self) -> Option<Option<crate::TraySpec>>;
+    fn declared_host(&self) -> Option<crate::ZsHostDeclarations>;
+    fn cursor_for(&self, widget: WidgetId, point: crate::Point) -> Option<crate::ZsCursor>;
+    #[cfg(feature = "canvas")]
+    fn canvas_wheel_event(
+        &self,
+        widget: WidgetId,
+        point: crate::Point,
+        delta: crate::Dp,
+    ) -> Option<crate::ZsCanvasWheelEvent>;
+    fn has_focus_change_handler(&self, widget: WidgetId) -> bool;
     fn widget_is_chromeless(&self, widget: WidgetId) -> bool;
     #[cfg(feature = "window-chrome")]
     fn window_drag_region_at(&self, point: crate::Point) -> bool;
@@ -213,6 +224,10 @@ impl SharedLiveViewRuntime {
         self.lock().dispatch_app_command(command)
     }
 
+    pub fn dispatch_host_event(&self, event: &crate::ZsHostEvent) -> LiveViewUpdate {
+        self.lock().dispatch_host_event(event)
+    }
+
     pub fn widget_text_value(&self, widget: WidgetId) -> Option<String> {
         self.lock().widget_text_value(widget)
     }
@@ -237,6 +252,29 @@ impl SharedLiveViewRuntime {
 
     pub fn widget_is_chromeless(&self, widget: WidgetId) -> bool {
         self.lock().widget_is_chromeless(widget)
+    }
+
+    /// The View's host declarations; `None` while the View is suspended.
+    pub fn declared_host(&self) -> Option<crate::ZsHostDeclarations> {
+        self.lock().declared_host()
+    }
+
+    pub fn cursor_for(&self, widget: WidgetId, point: crate::Point) -> Option<crate::ZsCursor> {
+        self.lock().cursor_for(widget, point)
+    }
+
+    #[cfg(feature = "canvas")]
+    pub fn canvas_wheel_event(
+        &self,
+        widget: WidgetId,
+        point: crate::Point,
+        delta: crate::Dp,
+    ) -> Option<crate::ZsCanvasWheelEvent> {
+        self.lock().canvas_wheel_event(widget, point, delta)
+    }
+
+    pub fn has_focus_change_handler(&self, widget: WidgetId) -> bool {
+        self.lock().has_focus_change_handler(widget)
     }
 
     /// The View's declared status item; `None` while the View is suspended.
@@ -793,6 +831,18 @@ where
         self.apply_messages(vec![message])
     }
 
+    /// Host events reach the application even while the View is suspended
+    /// (a hidden window still answers media keys and a second launch).
+    fn dispatch_host_event(&mut self, event: &crate::ZsHostEvent) -> LiveViewUpdate {
+        let Some(message) = self.view.host_message(event) else {
+            return LiveViewUpdate {
+                revision: self.revision,
+                ..LiveViewUpdate::default()
+            };
+        };
+        self.apply_messages(vec![message])
+    }
+
     fn widget_text_value(&self, widget: WidgetId) -> Option<String> {
         self.view.widget_text_value(widget).map(str::to_string)
     }
@@ -817,6 +867,36 @@ where
 
     fn widget_is_chromeless(&self, widget: WidgetId) -> bool {
         !self.suspended && self.view.widget_is_chromeless(widget)
+    }
+
+    fn declared_host(&self) -> Option<crate::ZsHostDeclarations> {
+        (!self.suspended).then(|| self.view.declared_host())
+    }
+
+    fn cursor_for(&self, widget: WidgetId, point: crate::Point) -> Option<crate::ZsCursor> {
+        if self.suspended {
+            None
+        } else {
+            self.view.cursor_for(widget, point)
+        }
+    }
+
+    #[cfg(feature = "canvas")]
+    fn canvas_wheel_event(
+        &self,
+        widget: WidgetId,
+        point: crate::Point,
+        delta: crate::Dp,
+    ) -> Option<crate::ZsCanvasWheelEvent> {
+        if self.suspended {
+            None
+        } else {
+            self.view.canvas_wheel_event(widget, point, delta)
+        }
+    }
+
+    fn has_focus_change_handler(&self, widget: WidgetId) -> bool {
+        !self.suspended && self.view.focus_change_message(widget, true).is_some()
     }
 
     #[cfg(feature = "tray")]

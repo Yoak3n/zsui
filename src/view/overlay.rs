@@ -126,6 +126,10 @@ impl<Msg> ViewNode<Msg> {
             (Some(id), ViewEvent::CanvasPointer { event }) => id == event.widget,
             #[cfg(feature = "canvas")]
             (Some(id), ViewEvent::CanvasHover { widget, .. }) => id == *widget,
+            #[cfg(feature = "canvas")]
+            (Some(id), ViewEvent::CanvasWheel { widget, .. }) => id == *widget,
+            (Some(id), ViewEvent::FocusChanged { widget, .. }) => id == *widget,
+            (_, ViewEvent::Host(_)) => false,
             #[cfg(feature = "textbox")]
             (Some(id), ViewEvent::TextEdited { widget, .. })
             | (Some(id), ViewEvent::TextSelectionChanged { widget, .. })
@@ -398,8 +402,20 @@ impl<Msg> ViewNode<Msg> {
             .find_map(|child| child.canvas_hover_region(widget, point))
     }
 
+    /// A Canvas-local DP rectangle in window pixels.
+    #[cfg(all(feature = "canvas", any(feature = "tooltip", feature = "accessibility")))]
+    pub(crate) fn canvas_rect_in_window(&self, bounds: Rect, rect: crate::ZsCanvasRect) -> Rect {
+        let scale = self.layout_dpi.scale_factor().max(f32::EPSILON);
+        Rect {
+            x: bounds.x.saturating_add((rect.x.0 * scale).round() as i32),
+            y: bounds.y.saturating_add((rect.y.0 * scale).round() as i32),
+            width: (rect.width.0 * scale).round().max(0.0) as i32,
+            height: (rect.height.0 * scale).round().max(0.0) as i32,
+        }
+    }
+
     #[cfg(feature = "canvas")]
-    fn canvas_local_point(&self, bounds: Rect, point: crate::Point) -> crate::ZsCanvasPoint {
+    pub(crate) fn canvas_local_point(&self, bounds: Rect, point: crate::Point) -> crate::ZsCanvasPoint {
         let scale = self.layout_dpi.scale_factor().max(f32::EPSILON);
         crate::ZsCanvasPoint::new(
             crate::Dp::new(point.x.saturating_sub(bounds.x) as f32 / scale),
@@ -1622,6 +1638,36 @@ impl<Msg> ViewNode<Msg> {
             }
         }
 
+        // Labeled Canvas regions are buttons to assistive technology;
+        // invoking one clicks its center.
+        #[cfg(feature = "canvas")]
+        if let (Some(canvas), Some(bounds), ViewNodeKind::Canvas { scene, .. }) =
+            (self.id, self.bounds, &self.kind)
+        {
+            let region_parent = semantic_parent;
+            for label in scene.region_labels() {
+                let Some(region) = scene
+                    .hover_regions()
+                    .iter()
+                    .rev()
+                    .find(|region| region.id == label.id)
+                else {
+                    continue;
+                };
+                let Some(rect) = clipped_rect(self.canvas_rect_in_window(bounds, region.rect), clip)
+                else {
+                    continue;
+                };
+                nodes.push(crate::ZsAccessibilityNode::from_spec(
+                    crate::canvas::zs_canvas_region_widget(canvas, label.id),
+                    region_parent,
+                    rect,
+                    &crate::ZsAccessibilitySpec::new(crate::ZsAccessibilityRole::Button)
+                        .label(label.label.clone()),
+                ));
+            }
+        }
+
         #[cfg(feature = "tabs")]
         if let (Some(tab_view), Some(bounds), ViewNodeKind::Tabs { tabs, selected, .. }) =
             (self.id, self.bounds, &self.kind)
@@ -2656,6 +2702,31 @@ impl<Msg> ViewNode<Msg> {
                         widget,
                         bounds,
                         spec: spec.clone(),
+                    });
+                }
+            }
+        }
+
+        // Labeled Canvas regions show their label as a tooltip.
+        #[cfg(feature = "canvas")]
+        if let (Some(canvas), Some(bounds), ViewNodeKind::Canvas { scene, .. }) =
+            (self.id, self.bounds, &self.kind)
+        {
+            for label in scene.region_labels().iter().filter(|label| label.tooltip) {
+                let Some(region) = scene
+                    .hover_regions()
+                    .iter()
+                    .rev()
+                    .find(|region| region.id == label.id)
+                else {
+                    continue;
+                };
+                if let Some(rect) = clipped_rect(self.canvas_rect_in_window(bounds, region.rect), clip)
+                {
+                    tooltip_targets.push(ViewTooltipTarget {
+                        widget: crate::canvas::zs_canvas_region_widget(canvas, label.id),
+                        bounds: rect,
+                        spec: crate::ZsTooltipSpec::new(label.label.clone()),
                     });
                 }
             }

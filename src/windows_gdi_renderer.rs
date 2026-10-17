@@ -224,12 +224,12 @@ unsafe extern "system" {
     fn GdipDeletePen(pen: *mut c_void) -> i32;
     fn GdipCreatePath(fill_mode: i32, path: *mut *mut c_void) -> i32;
     fn GdipDeletePath(path: *mut c_void) -> i32;
-    fn GdipAddPathArcI(
+    fn GdipAddPathArc(
         path: *mut c_void,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
         start_angle: f32,
         sweep_angle: f32,
     ) -> i32;
@@ -256,6 +256,45 @@ unsafe extern "system" {
     ) -> i32;
     fn GdipDisposeImage(image: *mut c_void) -> i32;
     fn GdipSetInterpolationMode(graphics: *mut c_void, interpolation_mode: i32) -> i32;
+    fn GdipSetPixelOffsetMode(graphics: *mut c_void, pixel_offset_mode: i32) -> i32;
+    fn GdipCreateImageAttributes(attributes: *mut *mut c_void) -> i32;
+    fn GdipSetImageAttributesWrapMode(
+        attributes: *mut c_void,
+        wrap: i32,
+        argb: u32,
+        clamp: i32,
+    ) -> i32;
+    fn GdipDisposeImageAttributes(attributes: *mut c_void) -> i32;
+    fn GdipSetPenLineJoin(pen: *mut c_void, line_join: i32) -> i32;
+    fn GdipSetPenStartCap(pen: *mut c_void, start_cap: i32) -> i32;
+    fn GdipSetPenEndCap(pen: *mut c_void, end_cap: i32) -> i32;
+    fn GdipDrawLinesI(
+        graphics: *mut c_void,
+        pen: *mut c_void,
+        points: *const POINT,
+        count: i32,
+    ) -> i32;
+    fn GdipDrawPolygonI(
+        graphics: *mut c_void,
+        pen: *mut c_void,
+        points: *const POINT,
+        count: i32,
+    ) -> i32;
+    fn GdipFillPolygonI(
+        graphics: *mut c_void,
+        brush: *mut c_void,
+        points: *const POINT,
+        count: i32,
+        fill_mode: i32,
+    ) -> i32;
+    fn GdipCreateLineBrushFromRectI(
+        rect: *const GdipRectI,
+        color1: u32,
+        color2: u32,
+        mode: i32,
+        wrap_mode: i32,
+        brush: *mut *mut c_void,
+    ) -> i32;
     fn GdipDrawImageRectRectI(
         graphics: *mut c_void,
         image: *mut c_void,
@@ -274,7 +313,21 @@ unsafe extern "system" {
     ) -> i32;
 }
 
+#[repr(C)]
+struct GdipRectI {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
 const GDIP_PIXEL_FORMAT_32BPP_PARGB: i32 = 0x000e_200b;
+const GDIP_PIXEL_OFFSET_MODE_HALF: i32 = 4;
+const GDIP_WRAP_MODE_TILE_FLIP_XY: i32 = 3;
+const GDIP_LINE_JOIN_ROUND: i32 = 2;
+const GDIP_LINE_CAP_ROUND: i32 = 2;
+const GDIP_LINEAR_GRADIENT_MODE_HORIZONTAL: i32 = 0;
+const GDIP_LINEAR_GRADIENT_MODE_VERTICAL: i32 = 1;
 const GDIP_INTERPOLATION_MODE_NEAREST_NEIGHBOR: i32 = 5;
 const GDIP_INTERPOLATION_MODE_HIGH_QUALITY_BICUBIC: i32 = 7;
 
@@ -363,12 +416,14 @@ fn color_to_argb(color: Color) -> u32 {
     ((color.a as u32) << 24) | ((color.r as u32) << 16) | ((color.g as u32) << 8) | color.b as u32
 }
 
+/// A rounded-rectangle path between edges given in pixels. Drawn with
+/// [`GDIP_PIXEL_OFFSET_MODE_HALF`], integer edges fall on pixel boundaries.
 unsafe fn build_gdiplus_round_path(
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-    radius: i32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
 ) -> *mut c_void {
     let mut path = std::ptr::null_mut();
     if GdipCreatePath(GDIP_FILL_MODE_ALTERNATE, &mut path) != 0 || path.is_null() {
@@ -376,12 +431,12 @@ unsafe fn build_gdiplus_round_path(
     }
     let w = right - left;
     let h = bottom - top;
-    let r = radius.min(w / 2).min(h / 2).max(1);
-    let d = r * 2;
-    let ok = GdipAddPathArcI(path, left, top, d, d, 180.0, 90.0) == 0
-        && GdipAddPathArcI(path, right - d, top, d, d, 270.0, 90.0) == 0
-        && GdipAddPathArcI(path, right - d, bottom - d, d, d, 0.0, 90.0) == 0
-        && GdipAddPathArcI(path, left, bottom - d, d, d, 90.0, 90.0) == 0
+    let r = radius.min(w / 2.0).min(h / 2.0).max(0.5);
+    let d = r * 2.0;
+    let ok = GdipAddPathArc(path, left, top, d, d, 180.0, 90.0) == 0
+        && GdipAddPathArc(path, right - d, top, d, d, 270.0, 90.0) == 0
+        && GdipAddPathArc(path, right - d, bottom - d, d, d, 0.0, 90.0) == 0
+        && GdipAddPathArc(path, left, bottom - d, d, d, 90.0, 90.0) == 0
         && GdipClosePathFigure(path) == 0;
     if !ok {
         let _ = GdipDeletePath(path);
@@ -409,8 +464,17 @@ unsafe fn draw_round_rect_antialiased(
         return false;
     }
     let _ = GdipSetSmoothingMode(graphics, GDIP_SMOOTHING_MODE_ANTI_ALIAS);
-    let path =
-        build_gdiplus_round_path(rect.left, rect.top, rect.right, rect.bottom, radius.max(1));
+    // Pixel edges on integer coordinates: the fill covers exactly the
+    // rectangle instead of half of its first and last rows and columns.
+    let _ = GdipSetPixelOffsetMode(graphics, GDIP_PIXEL_OFFSET_MODE_HALF);
+    let (left, top, right, bottom) = (
+        rect.left as f32,
+        rect.top as f32,
+        rect.right as f32,
+        rect.bottom as f32,
+    );
+    let radius = radius.max(1) as f32;
+    let path = build_gdiplus_round_path(left, top, right, bottom, radius);
     if path.is_null() {
         let _ = GdipDeleteGraphics(graphics);
         return false;
@@ -424,16 +488,28 @@ unsafe fn draw_round_rect_antialiased(
     } else {
         ok = false;
     }
+    let _ = GdipDeletePath(path);
     if let Some(stroke) = stroke.filter(|stroke| *stroke != fill) {
+        // The one-pixel border runs through the centers of the outer pixels.
+        let path = build_gdiplus_round_path(
+            left + 0.5,
+            top + 0.5,
+            right - 0.5,
+            bottom - 0.5,
+            (radius - 0.5).max(0.5),
+        );
         let mut pen = std::ptr::null_mut();
-        if GdipCreatePen1(color_to_argb(stroke), 1.0, GDIP_UNIT_PIXEL, &mut pen) == 0
+        if !path.is_null()
+            && GdipCreatePen1(color_to_argb(stroke), 1.0, GDIP_UNIT_PIXEL, &mut pen) == 0
             && !pen.is_null()
         {
             ok &= GdipDrawPath(graphics, pen, path) == 0;
             let _ = GdipDeletePen(pen);
         }
+        if !path.is_null() {
+            let _ = GdipDeletePath(path);
+        }
     }
-    let _ = GdipDeletePath(path);
     let _ = GdipDeleteGraphics(graphics);
     ok
 }
@@ -515,6 +591,160 @@ unsafe fn draw_arc_antialiased(
     }
     let _ = GdipDeleteGraphics(graphics);
     drawn
+}
+
+/// Runs `draw` on an antialiasing GDI+ surface over `hdc`; `false` when
+/// GDI+ is unavailable or the drawing failed.
+///
+/// Fills set `pixel_edges` so integer coordinates fall on pixel boundaries;
+/// strokes leave it unset so integer coordinates are pixel centers and odd
+/// widths stay crisp.
+unsafe fn with_gdiplus_antialiased(
+    hdc: HDC,
+    pixel_edges: bool,
+    draw: impl FnOnce(*mut c_void) -> bool,
+) -> bool {
+    if ensure_gdiplus_startup().is_none() || hdc.is_null() {
+        return false;
+    }
+    let mut graphics = std::ptr::null_mut();
+    GdiFlush();
+    if GdipCreateFromHDC(hdc, &mut graphics) != 0 || graphics.is_null() {
+        return false;
+    }
+    let _ = GdipSetSmoothingMode(graphics, GDIP_SMOOTHING_MODE_ANTI_ALIAS);
+    if pixel_edges {
+        let _ = GdipSetPixelOffsetMode(graphics, GDIP_PIXEL_OFFSET_MODE_HALF);
+    }
+    let drawn = draw(graphics);
+    let _ = GdipDeleteGraphics(graphics);
+    drawn
+}
+
+unsafe fn draw_polyline_antialiased(
+    hdc: HDC,
+    points: &[POINT],
+    color: Color,
+    width: i32,
+    closed: bool,
+) -> bool {
+    if points.len() < 2 {
+        return true;
+    }
+    let Ok(count) = i32::try_from(points.len()) else {
+        return false;
+    };
+    with_gdiplus_antialiased(hdc, false, |graphics| {
+        let mut pen = std::ptr::null_mut();
+        if GdipCreatePen1(
+            color_to_argb(color),
+            width.max(1) as f32,
+            GDIP_UNIT_PIXEL,
+            &mut pen,
+        ) != 0
+            || pen.is_null()
+        {
+            return false;
+        }
+        let _ = GdipSetPenLineJoin(pen, GDIP_LINE_JOIN_ROUND);
+        let _ = GdipSetPenStartCap(pen, GDIP_LINE_CAP_ROUND);
+        let _ = GdipSetPenEndCap(pen, GDIP_LINE_CAP_ROUND);
+        let drawn = if closed && points.len() > 2 {
+            GdipDrawPolygonI(graphics, pen, points.as_ptr(), count) == 0
+        } else {
+            GdipDrawLinesI(graphics, pen, points.as_ptr(), count) == 0
+        };
+        let _ = GdipDeletePen(pen);
+        drawn
+    })
+}
+
+unsafe fn fill_polygon_antialiased(hdc: HDC, points: &[POINT], color: Color) -> bool {
+    if points.len() < 3 {
+        return true;
+    }
+    let Ok(count) = i32::try_from(points.len()) else {
+        return false;
+    };
+    with_gdiplus_antialiased(hdc, true, |graphics| {
+        let mut brush = std::ptr::null_mut();
+        if GdipCreateSolidFill(color_to_argb(color), &mut brush) != 0 || brush.is_null() {
+            return false;
+        }
+        let drawn = GdipFillPolygonI(
+            graphics,
+            brush,
+            points.as_ptr(),
+            count,
+            GDIP_FILL_MODE_ALTERNATE,
+        ) == 0;
+        let _ = GdipDeleteBrush(brush);
+        drawn
+    })
+}
+
+unsafe fn fill_gradient_antialiased(
+    hdc: HDC,
+    rect: RECT,
+    start: Color,
+    end: Color,
+    direction: crate::NativeGradientDirection,
+    radius: i32,
+) -> bool {
+    if rect.right <= rect.left || rect.bottom <= rect.top {
+        return true;
+    }
+    with_gdiplus_antialiased(hdc, true, |graphics| {
+        let bounds = GdipRectI {
+            x: rect.left,
+            y: rect.top,
+            width: rect.right - rect.left,
+            height: rect.bottom - rect.top,
+        };
+        let mode = match direction {
+            crate::NativeGradientDirection::Vertical => GDIP_LINEAR_GRADIENT_MODE_VERTICAL,
+            crate::NativeGradientDirection::Horizontal => GDIP_LINEAR_GRADIENT_MODE_HORIZONTAL,
+        };
+        let mut brush = std::ptr::null_mut();
+        // Flipped tiling keeps the first row from wrapping to the end color.
+        if GdipCreateLineBrushFromRectI(
+            &bounds,
+            color_to_argb(start),
+            color_to_argb(end),
+            mode,
+            GDIP_WRAP_MODE_TILE_FLIP_XY,
+            &mut brush,
+        ) != 0
+            || brush.is_null()
+        {
+            return false;
+        }
+        let drawn = if radius > 0 {
+            let path = build_gdiplus_round_path(
+                rect.left as f32,
+                rect.top as f32,
+                rect.right as f32,
+                rect.bottom as f32,
+                radius as f32,
+            );
+            let drawn = !path.is_null() && GdipFillPath(graphics, brush, path) == 0;
+            if !path.is_null() {
+                let _ = GdipDeletePath(path);
+            }
+            drawn
+        } else {
+            GdipFillRectangleI(
+                graphics,
+                brush,
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            ) == 0
+        };
+        let _ = GdipDeleteBrush(brush);
+        drawn
+    })
 }
 
 #[derive(Debug)]
@@ -1126,14 +1356,21 @@ impl crate::native_input_visuals::NativeTextShaper for WindowsGdiTextShaper {
         dpi: Dpi,
         typography_scale: f32,
     ) -> Option<Size> {
-        self.measure_sized(text, semantic, None, max_width, dpi, typography_scale)
+        self.measure_sized(
+            text,
+            semantic,
+            crate::ZsTextOverrides::NONE,
+            max_width,
+            dpi,
+            typography_scale,
+        )
     }
 
     fn measure_sized(
         &self,
         text: &str,
         semantic: SemanticTextStyle,
-        font_size: Option<crate::ZsFontSize>,
+        overrides: crate::ZsTextOverrides,
         max_width: i32,
         dpi: Dpi,
         typography_scale: f32,
@@ -1155,8 +1392,9 @@ impl crate::native_input_visuals::NativeTextShaper for WindowsGdiTextShaper {
             },
             semantic,
         );
-        sized.size = font_size;
-        sized.apply_size_override(&mut style);
+        sized.size = overrides.size;
+        sized.family = overrides.family.map(|family| family.name().to_string());
+        sized.apply_style_overrides(&mut style);
         let layout = WindowsGdiTextLayout::with_dpi_scale_and_resources(
             dc.0,
             dpi.scale_factor(),
@@ -1551,6 +1789,8 @@ pub struct WindowsGdiDrawSink {
     system_icon_font: WindowsSystemIconFont,
     operation_log: Vec<NativeDrawCommandOperation>,
     high_contrast: bool,
+    /// Commands outside every one of these are skipped; clips still apply.
+    cull: Option<Vec<Rect>>,
 }
 
 impl WindowsGdiDrawSink {
@@ -1615,7 +1855,14 @@ impl WindowsGdiDrawSink {
             system_icon_font,
             operation_log: Vec::new(),
             high_contrast,
+            cull: None,
         }
+    }
+
+    /// Skips commands that cannot touch any of `cull`, for example outside
+    /// the areas a partial repaint updates.
+    pub fn set_cull(&mut self, cull: Option<Vec<Rect>>) {
+        self.cull = cull;
     }
 
     pub fn hdc(&self) -> HDC {
@@ -1692,7 +1939,7 @@ impl WindowsGdiDrawSink {
         if let Some(color) = command.color_override(self.high_contrast) {
             style.color = color;
         }
-        command.apply_size_override(&mut style);
+        command.apply_style_overrides(&mut style);
         let run = TextRun {
             text: command.text.clone(),
             bounds: command.bounds,
@@ -2006,6 +2253,18 @@ fn windows_gdi_font_family_available(dc: HDC, family: &str) -> bool {
 impl NativeDrawCommandSink for WindowsGdiDrawSink {
     fn draw_command(&mut self, command: &NativeDrawCommand) {
         self.operation_log.push(command.operation());
+        let clip = matches!(
+            command,
+            NativeDrawCommand::PushClip { .. } | NativeDrawCommand::PopClip
+        );
+        if let (Some(cull), false) = (&self.cull, clip) {
+            if command
+                .bounds()
+                .is_some_and(|bounds| !cull.iter().any(|area| rects_intersect(bounds, *area)))
+            {
+                return;
+            }
+        }
         match command {
             NativeDrawCommand::FillRect { rect, fill } => {
                 let source = self
@@ -2090,8 +2349,102 @@ impl NativeDrawCommandSink for WindowsGdiDrawSink {
             NativeDrawCommand::Image(command) => self.draw_image_command(command),
             NativeDrawCommand::PushClip { rect } => self.renderer.push_clip(*rect),
             NativeDrawCommand::PopClip => self.renderer.pop_clip(),
+            NativeDrawCommand::StrokePolyline {
+                points,
+                stroke,
+                width,
+                closed,
+            } => {
+                let stroke = self
+                    .palette
+                    .resolve_source_fill_with_contrast(*stroke, self.high_contrast);
+                let points = points
+                    .iter()
+                    .map(|point| POINT {
+                        x: point.x,
+                        y: point.y,
+                    })
+                    .collect::<Vec<_>>();
+                unsafe {
+                    draw_polyline_antialiased(
+                        self.renderer.hdc(),
+                        &points,
+                        stroke,
+                        *width,
+                        *closed,
+                    );
+                }
+            }
+            NativeDrawCommand::FillPolygon { points, fill } => {
+                let source = self
+                    .palette
+                    .resolve_source_fill_with_contrast(*fill, self.high_contrast);
+                let points = points
+                    .iter()
+                    .map(|point| POINT {
+                        x: point.x,
+                        y: point.y,
+                    })
+                    .collect::<Vec<_>>();
+                if points.len() < 3
+                    || unsafe { fill_polygon_antialiased(self.renderer.hdc(), &points, source) }
+                {
+                    return;
+                }
+                let fill = self
+                    .palette
+                    .resolve_fill_with_contrast(*fill, self.high_contrast);
+                let Some(brush) = self.renderer.cached_solid_brush(fill) else {
+                    return;
+                };
+                let _selected_brush = WindowsGdiSelectedObject::select(self.renderer.hdc(), brush);
+                let _selected_pen = WindowsGdiSelectedObject::select(self.renderer.hdc(), unsafe {
+                    GetStockObject(NULL_PEN)
+                });
+                unsafe {
+                    Polygon(self.renderer.hdc(), points.as_ptr(), points.len() as i32);
+                }
+            }
+            NativeDrawCommand::FillGradient {
+                rect,
+                start,
+                end,
+                direction,
+                radius,
+            } => {
+                if !self.high_contrast {
+                    let start = self
+                        .palette
+                        .resolve_source_fill_with_contrast(*start, false);
+                    let end = self.palette.resolve_source_fill_with_contrast(*end, false);
+                    if unsafe {
+                        fill_gradient_antialiased(
+                            self.renderer.hdc(),
+                            to_win_rect(*rect),
+                            start,
+                            end,
+                            *direction,
+                            *radius,
+                        )
+                    } {
+                        return;
+                    }
+                }
+                if *radius > 0 {
+                    self.draw_round_rect(*rect, *start, None, *radius);
+                } else {
+                    self.draw_command(&NativeDrawCommand::FillRect {
+                        rect: *rect,
+                        fill: *start,
+                    });
+                }
+            }
         }
     }
+}
+
+fn rects_intersect(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 }
 
 fn with_font<R>(dc: HDC, style: &TextStyle, dpi_scale: f32, f: impl FnOnce(HDC) -> R) -> R {
@@ -2321,7 +2674,20 @@ unsafe fn draw_image_frame_gdiplus(dc: HDC, command: &NativeDrawImageCommand) ->
             NativeImageInterpolation::Smooth => GDIP_INTERPOLATION_MODE_HIGH_QUALITY_BICUBIC,
         };
         let _ = GdipSetInterpolationMode(graphics, interpolation);
-        GdipDrawImageRectRectI(
+        // Smooth scaling samples beyond the source edges; mirrored tiling
+        // keeps those samples opaque instead of fading the outer pixels,
+        // and the half-pixel offset aligns source and target pixel centers.
+        let mut attributes = std::ptr::null_mut();
+        if command.interpolation == NativeImageInterpolation::Smooth {
+            let _ = GdipSetPixelOffsetMode(graphics, GDIP_PIXEL_OFFSET_MODE_HALF);
+            if GdipCreateImageAttributes(&mut attributes) != 0 || attributes.is_null() {
+                attributes = std::ptr::null_mut();
+            } else {
+                let _ =
+                    GdipSetImageAttributesWrapMode(attributes, GDIP_WRAP_MODE_TILE_FLIP_XY, 0, 0);
+            }
+        }
+        let drawn = GdipDrawImageRectRectI(
             graphics,
             image,
             command.bounds.x,
@@ -2341,10 +2707,14 @@ unsafe fn draw_image_frame_gdiplus(dc: HDC, command: &NativeDrawImageCommand) ->
                 .min(height.saturating_sub(command.source.y.max(0)))
                 .max(1),
             GDIP_UNIT_PIXEL,
+            attributes,
             std::ptr::null(),
             std::ptr::null(),
-            std::ptr::null(),
-        ) == 0
+        ) == 0;
+        if !attributes.is_null() {
+            let _ = GdipDisposeImageAttributes(attributes);
+        }
+        drawn
     } else {
         false
     };
@@ -2927,5 +3297,340 @@ mod tests {
             decode_png_to_bgra(ZsIcon::Search.png_24_bytes().expect("search icon")).unwrap();
         assert_eq!((width, height), (24, 24));
         assert_eq!(bgra.len(), 24 * 24 * 4);
+    }
+
+    /// A white 64x64 top-down DIB drawn through the GDI sink; returns the
+    /// BGRA bytes after `commands`.
+    fn render_commands(commands: &[NativeDrawCommand]) -> Vec<u8> {
+        render_commands_sized(64, 64, commands)
+    }
+
+    fn render_commands_sized(width: i32, height: i32, commands: &[NativeDrawCommand]) -> Vec<u8> {
+        render_commands_culled(width, height, commands, None)
+    }
+
+    fn render_commands_culled(
+        width: i32,
+        height: i32,
+        commands: &[NativeDrawCommand],
+        cull: Option<Vec<Rect>>,
+    ) -> Vec<u8> {
+        use windows_sys::Win32::Graphics::Gdi::CreateDIBSection;
+        let (w, h) = (width, height);
+        unsafe {
+            let dc = CreateCompatibleDC(std::ptr::null_mut());
+            assert!(!dc.is_null());
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = w;
+            info.bmiHeader.biHeight = -h;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(
+                dc,
+                &info,
+                DIB_RGB_COLORS,
+                &mut bits,
+                std::ptr::null_mut(),
+                0,
+            );
+            assert!(!bitmap.is_null() && !bits.is_null());
+            let previous = SelectObject(dc, bitmap);
+            {
+                let mut sink = WindowsGdiDrawSink::with_palette_contrast_and_dpi(
+                    dc,
+                    WindowsGdiPalette::default(),
+                    false,
+                    Dpi::new(96.0),
+                );
+                sink.draw_command(&NativeDrawCommand::FillRect {
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: w,
+                        height: h,
+                    },
+                    fill: NativeDrawFill::Color(rgb(255, 255, 255)),
+                });
+                sink.set_cull(cull);
+                for command in commands {
+                    sink.draw_command(command);
+                }
+            }
+            GdiFlush();
+            let pixels =
+                std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
+            SelectObject(dc, previous);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            pixels
+        }
+    }
+
+    fn rgb(r: u8, g: u8, b: u8) -> Color {
+        Color { r, g, b, a: 255 }
+    }
+
+    /// The (r, g, b) of pixel `(x, y)` in a 64-pixel-wide BGRA buffer.
+    fn pixel(pixels: &[u8], x: usize, y: usize) -> (u8, u8, u8) {
+        let index = (y * 64 + x) * 4;
+        (pixels[index + 2], pixels[index + 1], pixels[index])
+    }
+
+    #[test]
+    fn gradients_run_from_the_start_to_the_end_color() {
+        let pixels = render_commands(&[NativeDrawCommand::FillGradient {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            start: NativeDrawFill::Color(rgb(0, 0, 0)),
+            end: NativeDrawFill::Color(rgb(240, 0, 0)),
+            direction: crate::NativeGradientDirection::Vertical,
+            radius: 0,
+        }]);
+        let (top, _, _) = pixel(&pixels, 32, 0);
+        let (middle, _, _) = pixel(&pixels, 32, 32);
+        let (bottom, _, _) = pixel(&pixels, 32, 63);
+        assert!(top < 12, "top row {top}");
+        assert!((100..140).contains(&middle), "middle row {middle}");
+        assert!(bottom > 225, "bottom row {bottom}");
+        // A horizontal gradient varies across a row instead.
+        let pixels = render_commands(&[NativeDrawCommand::FillGradient {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            start: NativeDrawFill::Color(rgb(0, 0, 0)),
+            end: NativeDrawFill::Color(rgb(240, 0, 0)),
+            direction: crate::NativeGradientDirection::Horizontal,
+            radius: 8,
+        }]);
+        assert!(pixel(&pixels, 2, 32).0 < 12);
+        assert!(pixel(&pixels, 61, 32).0 > 225);
+        // The rounded corner leaves the background.
+        assert_eq!(pixel(&pixels, 0, 0), (255, 255, 255));
+    }
+
+    #[test]
+    fn polylines_and_polygons_cover_their_pixels() {
+        let ink = NativeDrawFill::Color(rgb(0, 0, 255));
+        let pixels = render_commands(&[
+            NativeDrawCommand::StrokePolyline {
+                points: vec![crate::Point { x: 4, y: 10 }, crate::Point { x: 60, y: 10 }],
+                stroke: ink,
+                width: 3,
+                closed: false,
+            },
+            NativeDrawCommand::FillPolygon {
+                points: vec![
+                    crate::Point { x: 10, y: 30 },
+                    crate::Point { x: 54, y: 30 },
+                    crate::Point { x: 32, y: 60 },
+                ],
+                fill: ink,
+            },
+        ]);
+        assert_eq!(pixel(&pixels, 32, 10), (0, 0, 255));
+        assert_eq!(pixel(&pixels, 32, 5), (255, 255, 255));
+        assert_eq!(pixel(&pixels, 32, 40), (0, 0, 255));
+        assert_eq!(pixel(&pixels, 4, 50), (255, 255, 255));
+    }
+
+    /// Rows holding ink in a `width`-pixel-wide BGRA buffer.
+    fn ink_rows(pixels: &[u8], width: usize) -> (usize, usize) {
+        let rows = pixels.len() / 4 / width;
+        let inked: Vec<usize> = (0..rows)
+            .filter(|y| (0..width).any(|x| pixels[(y * width + x) * 4 + 1] < 128))
+            .collect();
+        (
+            inked.first().copied().unwrap_or(0),
+            inked.last().copied().unwrap_or(0),
+        )
+    }
+
+    /// A window-like plan: a list of rows inside a clip, a progress bar and
+    /// a few lines of text in a side panel.
+    fn sample_plan(progress: i32, lyric: &str, row_shift: i32, bars: i32) -> NativeDrawPlan {
+        let text = |text: &str, x: i32, y: i32, w: i32| {
+            let mut command = NativeDrawTextCommand::new(
+                text,
+                Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: 20,
+                },
+                crate::SemanticTextStyle::body(),
+            );
+            command.color = Some(rgb(20, 20, 30));
+            command.size = Some(crate::ZsFontSize::from_dip(13.0));
+            NativeDrawCommand::Text(command)
+        };
+        let fill = |x: i32, y: i32, w: i32, h: i32, c: Color| NativeDrawCommand::FillRect {
+            rect: Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            fill: NativeDrawFill::Color(c),
+        };
+        let mut commands = vec![fill(0, 0, 400, 240, rgb(250, 250, 252))];
+        commands.push(NativeDrawCommand::PushClip {
+            rect: Rect {
+                x: 10,
+                y: 10,
+                width: 200,
+                height: 200,
+            },
+        });
+        for i in 0..6 {
+            let y = 12 + i * 32 - row_shift;
+            commands.push(fill(12, y, 190, 28, rgb(235, 235, 240)));
+            commands.push(text(&format!("第 {} 行 Row", i + 1), 20, y + 4, 170));
+        }
+        commands.push(NativeDrawCommand::PopClip);
+        commands.push(fill(220, 20, 4, bars, rgb(20, 20, 30)));
+        commands.push(fill(230, 40, 160, 4, rgb(220, 220, 228)));
+        commands.push(fill(230, 40, progress, 4, rgb(20, 20, 30)));
+        commands.push(text("晨雾漫过安静的街", 230, 70, 160));
+        commands.push(text(lyric, 230, 100, 160));
+        commands.push(text("我把昨天折成纸船", 230, 130, 160));
+        let mut plan = NativeDrawPlan::default();
+        for command in commands {
+            plan.push(command);
+        }
+        plan
+    }
+
+    /// Paints `next` over `previous` the way a partial repaint does and
+    /// checks the result equals painting `next` in full.
+    fn assert_partial_repaint_matches(previous: &NativeDrawPlan, next: &NativeDrawPlan) {
+        const W: i32 = 400;
+        const H: i32 = 240;
+        let window = Rect {
+            x: 0,
+            y: 0,
+            width: W,
+            height: H,
+        };
+        let mut screen = render_commands_sized(W, H, &previous.commands);
+        let full = render_commands_sized(W, H, &next.commands);
+        match crate::native_draw_plan_damage(previous, next, window) {
+            crate::NativeDrawDamage::None => {}
+            crate::NativeDrawDamage::Full => screen = full.clone(),
+            crate::NativeDrawDamage::Rects(rects) => {
+                let partial = render_commands_culled(W, H, &next.commands, Some(rects.clone()));
+                for rect in &rects {
+                    for y in rect.y.max(0)..(rect.y + rect.height).min(H) {
+                        for x in rect.x.max(0)..(rect.x + rect.width).min(W) {
+                            let i = ((y * W + x) * 4) as usize;
+                            screen[i..i + 4].copy_from_slice(&partial[i..i + 4]);
+                        }
+                    }
+                }
+            }
+        }
+        let differing = screen
+            .chunks_exact(4)
+            .zip(full.chunks_exact(4))
+            .filter(|(a, b)| a[..3] != b[..3])
+            .count();
+        assert_eq!(differing, 0, "pixels that differ from a full repaint");
+    }
+
+    #[test]
+    fn partial_repaints_match_full_repaints() {
+        let base = sample_plan(40, "路灯还没有醒来", 0, 8);
+        // The progress grows and the bars move: two small areas.
+        let next = sample_plan(64, "路灯还没有醒来", 0, 12);
+        assert!(matches!(
+            crate::native_draw_plan_damage(
+                &base,
+                &next,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 400,
+                    height: 240
+                }
+            ),
+            crate::NativeDrawDamage::Rects(_)
+        ));
+        assert_partial_repaint_matches(&base, &next);
+        // A new lyric line.
+        assert_partial_repaint_matches(&base, &sample_plan(40, "放进流动的风里", 0, 8));
+        // The clipped list scrolls under its clip.
+        assert_partial_repaint_matches(&base, &sample_plan(40, "路灯还没有醒来", 10, 8));
+        // Everything at once.
+        assert_partial_repaint_matches(&base, &sample_plan(120, "我把昨天", 20, 14));
+    }
+
+    #[test]
+    fn truncated_text_keeps_its_size() {
+        let text = |width: i32| {
+            let mut command = NativeDrawTextCommand::new(
+                "电视剧《难哄》影视原声带·晴天 影视原声带",
+                Rect {
+                    x: 4,
+                    y: 4,
+                    width,
+                    height: 32,
+                },
+                crate::SemanticTextStyle::body(),
+            );
+            command.color = Some(rgb(0, 0, 0));
+            command.size = Some(crate::ZsFontSize::from_dip(13.0));
+            NativeDrawCommand::Text(command)
+        };
+        let full = render_commands_sized(600, 40, &[text(590)]);
+        let cut = render_commands_sized(600, 40, &[text(160)]);
+        let (a0, a1) = ink_rows(&full, 600);
+        let (b0, b1) = ink_rows(&cut, 600);
+        assert_eq!(
+            (b1 - b0),
+            (a1 - a0),
+            "full {a0}..{a1}, truncated {b0}..{b1}"
+        );
+    }
+
+    #[test]
+    fn smoothly_scaled_images_keep_opaque_edges() {
+        let frame = crate::ZsImageFrame::from_rgba8(
+            crate::ZsImageFrameId::new(7),
+            2,
+            2,
+            [0, 0, 255, 255].repeat(4),
+        )
+        .unwrap();
+        let pixels = render_commands(&[NativeDrawCommand::Image(
+            NativeDrawImageCommand::new(
+                frame,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                },
+                Rect {
+                    x: 8,
+                    y: 8,
+                    width: 48,
+                    height: 48,
+                },
+            )
+            .interpolation(NativeImageInterpolation::Smooth),
+        )]);
+        for (x, y) in [(8, 8), (55, 8), (8, 55), (55, 55), (31, 8)] {
+            assert_eq!(pixel(&pixels, x, y), (0, 0, 255), "edge pixel ({x}, {y})");
+        }
+        assert_eq!(pixel(&pixels, 7, 7), (255, 255, 255));
     }
 }
