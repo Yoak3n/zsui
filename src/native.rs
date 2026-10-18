@@ -3562,11 +3562,10 @@ impl NativeViewInputRuntime {
             report.canvas_pointer_button = Some(button);
             return self.dispatch_view_event(
                 ViewEvent::CanvasPointer {
-                    event: crate::canvas::zs_canvas_pointer_event(
+                    event: self.canvas_pointer_event(
                         target.widget,
                         target.bounds,
                         point,
-                        self.dpi,
                         crate::ZsCanvasPointerPhase::Pressed,
                         button,
                         modifiers,
@@ -3895,11 +3894,10 @@ impl NativeViewInputRuntime {
             report.canvas_pointer_button = Some(capture.button);
             return self.dispatch_view_event(
                 ViewEvent::CanvasPointer {
-                    event: crate::canvas::zs_canvas_pointer_event(
+                    event: self.canvas_pointer_event(
                         capture.widget,
                         bounds,
                         point,
-                        self.dpi,
                         crate::ZsCanvasPointerPhase::Moved,
                         capture.button,
                         modifiers,
@@ -4176,11 +4174,10 @@ impl NativeViewInputRuntime {
             );
             let report = self.dispatch_view_event(
                 ViewEvent::CanvasPointer {
-                    event: crate::canvas::zs_canvas_pointer_event(
+                    event: self.canvas_pointer_event(
                         capture.widget,
                         bounds,
                         point,
-                        self.dpi,
                         crate::ZsCanvasPointerPhase::Released,
                         button,
                         modifiers,
@@ -4839,11 +4836,10 @@ impl NativeViewInputRuntime {
                 .unwrap_or(capture.bounds);
             return self.dispatch_view_event(
                 ViewEvent::CanvasPointer {
-                    event: crate::canvas::zs_canvas_pointer_event(
+                    event: self.canvas_pointer_event(
                         capture.widget,
                         bounds,
                         capture.last_point,
-                        self.dpi,
                         crate::ZsCanvasPointerPhase::Cancelled,
                         capture.button,
                         ZsPointerModifiers::default(),
@@ -4924,6 +4920,41 @@ impl NativeViewInputRuntime {
 
     /// Sends `CanvasHover` when the hover-aware Canvas region under `point`
     /// changes; `None` means the pointer left the window.
+    // Clipped hit bounds admit input; only the original canvas bounds define
+    // its local coordinate system. Re-read them after every retained rebuild.
+    #[cfg(feature = "canvas")]
+    fn canvas_pointer_event(
+        &self,
+        widget: crate::WidgetId,
+        hit_bounds: Rect,
+        point: Point,
+        phase: crate::ZsCanvasPointerPhase,
+        button: crate::ZsPointerButton,
+        modifiers: ZsPointerModifiers,
+    ) -> crate::ZsCanvasPointerEvent {
+        let source_bounds = self
+            .live_view
+            .as_ref()
+            .and_then(|view| view.canvas_bounds(widget))
+            .or_else(|| {
+                self.ui_command_view
+                    .as_ref()
+                    .and_then(|view| view.canvas_bounds(widget))
+            })
+            .unwrap_or(hit_bounds);
+        let mut event = crate::canvas::zs_canvas_pointer_event(
+            widget,
+            source_bounds,
+            point,
+            self.dpi,
+            phase,
+            button,
+            modifiers,
+        );
+        event.inside = hit_bounds.contains(point);
+        event
+    }
+
     #[cfg(feature = "canvas")]
     fn sync_canvas_hover(
         &mut self,
@@ -16546,5 +16577,160 @@ fn native_default_cursor(kind: crate::ViewHitTargetKind) -> crate::ZsCursor {
         #[cfg(feature = "auto-suggest")]
         crate::ViewHitTargetKind::AutoSuggestBox => crate::ZsCursor::Text,
         _ => crate::ZsCursor::Arrow,
+    }
+}
+
+#[cfg(all(test, feature = "canvas", feature = "scroll"))]
+mod canvas_scroll_regression {
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    enum Msg {
+        Pointer(crate::ZsCanvasPointerEvent),
+        Hover(Option<u64>),
+    }
+    struct State {
+        offset: f32,
+        pressed: Option<u64>,
+        toggled: bool,
+        shift: bool,
+    }
+
+    #[test]
+    fn native_canvas_pointer_uses_unclipped_origin_at_every_dpi() {
+        for dpi in [96.0, 120.0, 144.0, 192.0] {
+            for shift in [false, true] {
+                let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let observed = events.clone();
+                let toggled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let changed = toggled.clone();
+                let canvas_id = crate::WidgetId::new(781);
+                let builder = native_window("Canvas coordinate test")
+                    .size(320, 240)
+                    .stateful_view(
+                        State {
+                            offset: 160.0,
+                            pressed: None,
+                            toggled: false,
+                            shift,
+                        },
+                        move |state| {
+                            let canvas =
+                                crate::canvas_with(|_: &crate::ZsCanvasLayoutContext<'_>| {
+                                    let mut scene = crate::ZsCanvasScene::new();
+                                    scene.set_extent_height(crate::Dp::new(600.0));
+                                    scene.push_hover_region(
+                                        3,
+                                        crate::ZsCanvasRect::new(
+                                            crate::Dp::new(20.0),
+                                            crate::Dp::new(40.0),
+                                            crate::Dp::new(80.0),
+                                            crate::Dp::new(32.0),
+                                        ),
+                                    );
+                                    scene.push_hover_region(
+                                        9,
+                                        crate::ZsCanvasRect::new(
+                                            crate::Dp::new(20.0),
+                                            crate::Dp::new(200.0),
+                                            crate::Dp::new(80.0),
+                                            crate::Dp::new(32.0),
+                                        ),
+                                    );
+                                    scene
+                                })
+                                .id(canvas_id)
+                                .on_canvas_pointer(Msg::Pointer)
+                                .on_canvas_hover(Msg::Hover);
+                            crate::row([
+                                crate::spacer().width(crate::Dp::new(20.0)),
+                                crate::column([
+                                    crate::spacer().height(crate::Dp::new(20.0)),
+                                    crate::scroll(canvas)
+                                        .scroll_y(crate::Dp::new(state.offset))
+                                        .height(crate::Dp::new(120.0)),
+                                ])
+                                .width(crate::Dp::new(200.0)),
+                            ])
+                        },
+                        move |state, message, _cx| match message {
+                            Msg::Hover(region) => {
+                                let _ = region;
+                            }
+                            Msg::Pointer(event) => {
+                                observed.lock().unwrap().push(event);
+                                match event.phase {
+                                    crate::ZsCanvasPointerPhase::Pressed => {
+                                        state.pressed = event.region;
+                                        if state.shift {
+                                            state.offset = 168.0;
+                                        }
+                                    }
+                                    crate::ZsCanvasPointerPhase::Released => {
+                                        if state.pressed.take() == Some(9)
+                                            && event.region == Some(9)
+                                            && event.inside
+                                        {
+                                            state.toggled = !state.toggled;
+                                            changed.store(
+                                                state.toggled,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
+                                        }
+                                    }
+                                    crate::ZsCanvasPointerPhase::Cancelled => state.pressed = None,
+                                    _ => {}
+                                }
+                            }
+                        },
+                    );
+                let live = builder.native_live_view_runtime().unwrap().clone();
+                let mut runtime = builder.native_view_input_runtime();
+                let scale = dpi / 96.0;
+                runtime.set_surface(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: (320.0 * scale) as i32,
+                        height: (240.0 * scale) as i32,
+                    },
+                    Dpi::new(dpi),
+                );
+                let point = Point {
+                    x: (48.0 * scale) as i32,
+                    y: (72.0 * scale) as i32,
+                };
+                assert_eq!(live.canvas_hover_region(canvas_id, point), Some(Some(9)));
+                assert!(runtime.dispatch_pointer_down(point, false).handled);
+                let pressed = events.lock().unwrap()[0];
+                assert_eq!(
+                    pressed.region,
+                    Some(9),
+                    "pressed region at dpi={dpi}, shift={shift}; position={:?}",
+                    pressed.position
+                );
+                assert_eq!(pressed.position.y.0, 212.0);
+                assert!(runtime.dispatch_pointer_move(point).handled);
+                assert!(runtime.dispatch_pointer_up(point).handled);
+                assert!(toggled.load(std::sync::atomic::Ordering::Relaxed));
+                let released = *events.lock().unwrap().last().unwrap();
+                assert_eq!(released.position.y.0, if shift { 220.0 } else { 212.0 });
+                assert_eq!(released.region, Some(9));
+                // Captured input outside the viewport is delivered without activating it.
+                runtime.dispatch_pointer_down(point, false);
+                let outside = Point {
+                    x: (48.0 * scale) as i32,
+                    y: (152.0 * scale) as i32,
+                };
+                runtime.dispatch_pointer_up(outside);
+                assert!(!events.lock().unwrap().last().unwrap().inside);
+                assert!(toggled.load(std::sync::atomic::Ordering::Relaxed));
+                runtime.dispatch_pointer_down(point, false);
+                runtime.cancel_pointer_drag();
+                let cancelled = *events.lock().unwrap().last().unwrap();
+                assert_eq!(cancelled.phase, crate::ZsCanvasPointerPhase::Cancelled);
+                assert_eq!(cancelled.position.y.0, if shift { 220.0 } else { 212.0 });
+            }
+        }
     }
 }

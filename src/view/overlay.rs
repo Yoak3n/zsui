@@ -374,6 +374,17 @@ impl<Msg> ViewNode<Msg> {
         }
     }
 
+    /// The complete layout rectangle, before any enclosing viewport clips it.
+    #[cfg(feature = "canvas")]
+    pub(crate) fn canvas_bounds(&self, widget: WidgetId) -> Option<Rect> {
+        if self.id == Some(widget) {
+            return matches!(&self.kind, ViewNodeKind::Canvas { .. })
+                .then_some(self.bounds)
+                .flatten();
+        }
+        self.children.iter().find_map(|child| child.canvas_bounds(widget))
+    }
+
     /// The hover region under `point` for the hover-aware Canvas `widget`:
     /// `None` when `widget` is not a Canvas with `on_canvas_hover`, and
     /// `Some(None)` when the pointer is outside every declared region.

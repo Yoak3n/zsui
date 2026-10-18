@@ -55,6 +55,8 @@ trait LiveViewDriver: Send {
     #[cfg(feature = "window-chrome")]
     fn window_drag_region_at(&self, point: crate::Point) -> bool;
     #[cfg(feature = "canvas")]
+    fn canvas_bounds(&self, widget: WidgetId) -> Option<Rect>;
+    #[cfg(feature = "canvas")]
     fn canvas_hover_region(&self, widget: WidgetId, point: crate::Point) -> Option<Option<u64>>;
     #[cfg(feature = "textbox")]
     fn widget_text_submits(&self, widget: WidgetId) -> Option<bool>;
@@ -286,6 +288,11 @@ impl SharedLiveViewRuntime {
     #[cfg(feature = "window-chrome")]
     pub fn window_drag_region_at(&self, point: crate::Point) -> bool {
         self.lock().window_drag_region_at(point)
+    }
+
+    #[cfg(feature = "canvas")]
+    pub(crate) fn canvas_bounds(&self, widget: WidgetId) -> Option<Rect> {
+        self.lock().canvas_bounds(widget)
     }
 
     #[cfg(feature = "canvas")]
@@ -907,6 +914,15 @@ where
     #[cfg(feature = "window-chrome")]
     fn window_drag_region_at(&self, point: crate::Point) -> bool {
         !self.suspended && self.view.window_drag_region_at(point)
+    }
+
+    #[cfg(feature = "canvas")]
+    fn canvas_bounds(&self, widget: WidgetId) -> Option<Rect> {
+        if self.suspended {
+            None
+        } else {
+            self.view.canvas_bounds(widget)
+        }
     }
 
     #[cfg(feature = "canvas")]
