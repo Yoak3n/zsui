@@ -458,8 +458,6 @@
         ".github/workflows/ci.yml",
         "scripts/check-native-boundary.ps1",
         "scripts/check-feature-matrix.ps1",
-        "tools/native-proof/Cargo.toml",
-        "tools/native-proof/src/main.rs",
         "README.md"
       ],
       "optional": [
@@ -469,7 +467,9 @@
         "docs/ai/context-packs.json",
         "docs/gallery.md",
         "docs/images",
-        "docs/native-host-smoke.md"
+        "docs/native-host-smoke.md",
+        "tools/native-proof/Cargo.toml",
+        "tools/native-proof/src/main.rs"
       ],
       "verify": [
         "cargo fmt --all -- --check",
