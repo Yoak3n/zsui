@@ -1599,6 +1599,15 @@ history remain authoritative for implementation status.
   runtime fallback and DirectWrite remains a proof oracle. The five weighted
   emoji/mixed-semibold deviations stay explicit release gaps until the full
   matrix is stable.
+- Windows Rust text must look like the system's ClearType text, not merely
+  share its geometry. Subpixel masks sample the physical stripe order chosen by
+  the user's font-smoothing settings (zeno's `Format::Subpixel` is BGR-ordered
+  for ZSUI's RGB compositor, which once reversed every color fringe), and
+  standard or disabled smoothing renders grayscale. Monochrome outlines are
+  hinted through skrifa because swash always reports symmetric smoothing; the
+  Windows policy takes that bit from the face's `gasp` range like DirectWrite,
+  so CJK UI faces keep whole-pixel horizontal strokes. Compare changes against
+  the `text_geometry_proof` DirectWrite pixels, not by eye.
 - The declarative View is temporary input to type+key reconciliation. The
   retained architecture separates Element state/identity, RenderObject
   geometry/paint invalidation, repaint-boundary DisplayLists and sparse
