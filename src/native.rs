@@ -9739,6 +9739,12 @@ impl NativeWindowBuilder {
         self
     }
 
+    /// Requests an initial outer position. Wayland compositors may ignore it.
+    pub fn position(mut self, x: i32, y: i32) -> Self {
+        self.window = self.window.position(x, y);
+        self
+    }
+
     pub fn visible(mut self, visible: bool) -> Self {
         self.window = self.window.visible(visible);
         self
@@ -10145,6 +10151,11 @@ impl<ContentState> TypedNativeWindowBuilder<ContentState> {
 
     pub fn min_size(mut self, width: u32, height: u32) -> Self {
         self.inner = self.inner.min_size(width, height);
+        self
+    }
+
+    pub fn position(mut self, x: i32, y: i32) -> Self {
+        self.inner = self.inner.position(x, y);
         self
     }
 
