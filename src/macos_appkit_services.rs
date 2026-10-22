@@ -20,9 +20,9 @@ use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOn
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertStyle,
     NSAlertThirdButtonReturn, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSBackingStoreType, NSFloatingWindowLevel, NSModalResponseCancel, NSModalResponseOK,
-    NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSSavePanel, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSBackingStoreType, NSEventMask, NSFloatingWindowLevel, NSModalResponseCancel,
+    NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSSavePanel, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 #[cfg(feature = "native-smoke")]
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRepPropertyKey, NSModalPanelRunLoopMode};
@@ -32,11 +32,11 @@ use objc2_core_graphics::{
     CGRectNull, CGWindowImageOption, CGWindowListCreateImage, CGWindowListOption,
 };
 use objc2_foundation::{
-    NSArray, NSDate, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRunLoop,
-    NSSize, NSString, NSURL,
+    NSArray, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSRunLoop, NSSize, NSString, NSURL,
 };
 #[cfg(feature = "native-smoke")]
-use objc2_foundation::{NSDefaultRunLoopMode, NSDictionary, NSTimer};
+use objc2_foundation::{NSDictionary, NSTimer};
 
 use crate::native_clipboard::{native_clipboard_text_write, NativeClipboardTextWrite};
 use crate::native_file_dialog::{
@@ -867,20 +867,12 @@ fn appkit_schedule_directory_proof(
             return;
         }
         if select {
-            use std::io::Write as _;
-            let _ = writeln!(
-                std::io::stderr(),
-                "AppKit directory proof: visible={}, app_running={}, choices={}",
-                action_panel.isVisible(),
-                NSApplication::sharedApplication(action_panel.mtm()).isRunning(),
-                action_panel.URLs().len()
-            );
             let key = NSString::from_str("\r");
             if let Some(event) = objc2_app_kit::NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
                 objc2_app_kit::NSEventType::KeyDown, NSPoint::new(0.0, 0.0), objc2_app_kit::NSEventModifierFlags::empty(), 0.0,
                 action_panel.windowNumber(), None, &key, &key, false, 36,
             ) {
-                if !action_panel.performKeyEquivalent(&event) { action_panel.sendEvent(&event); }
+                NSApplication::sharedApplication(action_panel.mtm()).postEvent_atStart(&event, false);
             }
         } else {
             unsafe {
@@ -1291,10 +1283,7 @@ fn appkit_run_alert(alert: &NSAlert, owner: Option<&NSWindow>) -> objc2_app_kit:
     });
     alert.beginSheetModalForWindow_completionHandler(owner, Some(&completion));
 
-    let run_loop = NSRunLoop::currentRunLoop();
-    while response.get().is_none() {
-        run_loop.runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
-    }
+    appkit_wait_for_sheet_response(&response, alert.mtm());
     response
         .get()
         .expect("AppKit sheet completion set an alert response")
@@ -1358,15 +1347,37 @@ fn appkit_run_file_panel(
         return Ok(NSModalResponseCancel);
     }
 
-    let run_loop = NSRunLoop::currentRunLoop();
-    while response.get().is_none() {
-        run_loop.runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
-    }
+    appkit_wait_for_sheet_response(&response, panel.mtm());
     panel.orderOut(None);
 
     Ok(response
         .get()
         .expect("AppKit sheet completion set a modal response"))
+}
+
+fn appkit_wait_for_sheet_response(
+    response: &Cell<Option<objc2_app_kit::NSModalResponse>>,
+    mtm: MainThreadMarker,
+) {
+    let application = NSApplication::sharedApplication(mtm);
+    // A sheet is document-modal, but does not start an AppKit event loop.
+    // Pump native events as well as run-loop sources while the synchronous
+    // service waits, so remote file-panel views can paint and receive input.
+    while response.get().is_none() {
+        let deadline = NSDate::dateWithTimeIntervalSinceNow(0.01);
+        let event = unsafe {
+            application.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(&deadline),
+                NSDefaultRunLoopMode,
+                true,
+            )
+        };
+        if let Some(event) = event {
+            application.sendEvent(&event);
+        }
+        application.updateWindows();
+    }
 }
 
 #[cfg(feature = "native-smoke")]
