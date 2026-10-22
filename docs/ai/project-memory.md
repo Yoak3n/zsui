@@ -1629,6 +1629,10 @@ history remain authoritative for implementation status.
   Accepted work remains queued across event-loop budgets; modal services execute
   outside View/route locks. Destruction terminates delivery, while hiding alone
   does not terminate application state updates.
+- AppKit synchronous file sheets use the panel's native modal session. Native
+  proof sends keyboard input through WindowServer because modern file-panel
+  controls are hosted by a remote service; composited captures include all
+  on-screen layers within the panel bounds, rather than only its local proxy.
 
 ## Acceptance applications
 

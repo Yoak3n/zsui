@@ -102,10 +102,15 @@ All native renderers have the complete built-in vector fallback.
 
 The Windows fallback paint test checks all 45 semantic icons for nonempty GDI+
 pixels; the native layout example exercises light, dark and high-contrast
-rendering, including differently tinted instances of one icon. AppKit and Linux
-have renderer implementations; updated target screenshots and interaction checks
-are required before extending their native-icon capability claims. Source
-catalogs and cross-target compilation alone are not visual proof.
+rendering, including differently tinted instances of one icon. Native target
+captures cover all 45 icons in light, dark and high-contrast scenes on
+[Win32, Linux Direct, Direct Lite and GTK](https://github.com/qiu7824/zsui/actions/runs/39739754950)
+at `303076c883f23079c33581b395987c49d37c3c72`, and on
+[AppKit](https://github.com/qiu7824/zsui/actions/runs/39748828996) at
+`027c7fbd8841ebf43db58f1c77b665e05ca23c7e`. The AppKit capture includes the
+framework background behind semantic glyphs. These fixed scenes establish
+target rendering evidence; they do not replace manual optical review at every
+OS font setting or display scale.
 
 ## Licensing
 

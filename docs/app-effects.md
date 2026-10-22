@@ -49,6 +49,8 @@ independent state flag and does not depend on queue capacity.
 Windows uses an owner-bound shell folder picker with an STA lifetime, initial
 folder and long-path resolution. AppKit uses a directory-only `NSOpenPanel` with
 the existing owner sheet contract. GTK uses `FileChooserNative::SelectFolder`.
+AppKit waits through the native file-panel modal session; native alert sheets
+dispatch application events while waiting for their completion callback.
 Linux Direct uses its existing portal/Zenity provider through `rfd::pick_folder`.
 All return local `PathBuf` values; cancellation is `Ok(None)`. Unsupported remains
 the contract for backends without directory services. Linux Direct inherits
@@ -58,6 +60,15 @@ The controlled dispatcher tests cover 1,000 queued requests, 100 chained results
 FIFO batching, admission at capacity, deadline expiry, provider failure,
 cancellation, duplicate results and window destruction. Native visual and service
 proof remains platform-specific; a cross-target check does not certify interaction.
+
+[Win32, Linux Direct, Direct Lite and GTK target proof](https://github.com/qiu7824/zsui/actions/runs/39739754950)
+at `303076c883f23079c33581b395987c49d37c3c72` and
+[AppKit target proof](https://github.com/qiu7824/zsui/actions/runs/39748828996)
+at `027c7fbd8841ebf43db58f1c77b665e05ca23c7e` verify directory selection and
+cancellation through the application update loop. The selected path must match
+the requested directory exactly. AppKit proof sends Return/Escape through
+WindowServer to the native remote panel and captures its composited bounds;
+capturing only the local panel proxy omits the remote controls.
 
 ## Native input verification
 
