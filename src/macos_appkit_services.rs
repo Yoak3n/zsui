@@ -866,13 +866,23 @@ fn appkit_schedule_directory_proof(
         if !captured {
             return;
         }
+        #[allow(deprecated)]
+        if let Some(image) = CGWindowListCreateImage(
+            unsafe { CGRectNull },
+            CGWindowListOption::OptionOnScreenOnly,
+            0,
+            CGWindowImageOption::BestResolution,
+        ) {
+            let bitmap = objc2_app_kit::NSBitmapImageRep::initWithCGImage(
+                objc2_app_kit::NSBitmapImageRep::alloc(),
+                &image,
+            );
+            let _ =
+                appkit_write_bitmap_png(&bitmap, &screenshot.with_file_name("picker-desktop.png"));
+        }
         if select {
-            let key = NSString::from_str("\r");
-            if let Some(event) = objc2_app_kit::NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-                objc2_app_kit::NSEventType::KeyDown, NSPoint::new(0.0, 0.0), objc2_app_kit::NSEventModifierFlags::empty(), 0.0,
-                action_panel.windowNumber(), None, &key, &key, false, 36,
-            ) {
-                NSApplication::sharedApplication(action_panel.mtm()).postEvent_atStart(&event, false);
+            unsafe {
+                action_panel.ok(None);
             }
         } else {
             unsafe {
@@ -1347,12 +1357,12 @@ fn appkit_run_file_panel(
         return Ok(NSModalResponseCancel);
     }
 
-    appkit_wait_for_sheet_response(&response, panel.mtm());
+    // NSSavePanel also owns remote-view validation and modal-session state.
+    // Its native modal loop must run while a synchronous sheet service waits.
+    let modal_response = panel.runModal();
     panel.orderOut(None);
 
-    Ok(response
-        .get()
-        .expect("AppKit sheet completion set a modal response"))
+    Ok(response.get().unwrap_or(modal_response))
 }
 
 fn appkit_wait_for_sheet_response(
