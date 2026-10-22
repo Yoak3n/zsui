@@ -131,6 +131,12 @@ pub(crate) fn run_linux_direct_native_window_event_loop(
         .build()
         .map_err(|error| ZsuiError::host("linux_direct_event_loop", error.to_string()))?;
     let event_proxy = event_loop.create_proxy();
+    let control_proxy = event_proxy.clone();
+    crate::install_control_sender(move |control| {
+        control_proxy
+            .send_event(LinuxDirectUserEvent::Control(control))
+            .is_ok()
+    });
     let mut app = LinuxDirectApp::new(
         specs,
         draw_plans,
@@ -168,6 +174,7 @@ pub(crate) fn run_linux_direct_native_window_event_loop(
 #[derive(Debug, Clone, Copy)]
 enum LinuxDirectUserEvent {
     InvalidateView,
+    Control(crate::NativeWindowControl),
 }
 
 struct LinuxDirectApp {
@@ -282,6 +289,9 @@ impl LinuxDirectApp {
                     height as f64,
                 )));
             }
+            if let Some((x, y)) = spec.position {
+                attributes = attributes.with_position(LogicalPosition::new(x, y));
+            }
             if spec.always_on_top {
                 attributes = attributes.with_window_level(WindowLevel::AlwaysOnTop);
             }
@@ -341,6 +351,8 @@ impl LinuxDirectApp {
             direct.sync_text_input();
             window.set_visible(visible);
             window.request_redraw();
+            crate::control::record_window_visible(visible);
+            record_window_rect(&direct);
             self.windows.insert(window.id(), direct);
             self.created_window_count += 1;
         }
@@ -537,6 +549,18 @@ impl OptionInstantExt for Option<Instant> {
     }
 }
 
+fn record_window_rect(window: &LinuxDirectWindow) {
+    let scale = window.scale_factor;
+    let size = window.window.inner_size().to_logical::<u32>(scale);
+    let position = window
+        .window
+        .outer_position()
+        .ok()
+        .map(|position| position.to_logical::<i32>(scale))
+        .unwrap_or(LogicalPosition::new(0, 0));
+    crate::record_window_rect(position.x, position.y, size.width, size.height);
+}
+
 impl ApplicationHandler<LinuxDirectUserEvent> for LinuxDirectApp {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: StartCause) {}
 
@@ -559,6 +583,54 @@ impl ApplicationHandler<LinuxDirectUserEvent> for LinuxDirectApp {
                     window.apply_report(report, event_loop);
                 }
             }
+            LinuxDirectUserEvent::Control(control) => {
+                use crate::NativeWindowControl;
+                if let Some(window) = self.windows.values_mut().next() {
+                    match control {
+                        NativeWindowControl::Show => {
+                            window.window.set_visible(true);
+                            window.window.focus_window();
+                            window.window.request_redraw();
+                            crate::control::record_window_visible(true);
+                        }
+                        NativeWindowControl::Hide => {
+                            window.window.set_visible(false);
+                            crate::control::record_window_visible(false);
+                        }
+                        NativeWindowControl::Toggle => {
+                            let visible = window.window.is_visible().unwrap_or(true);
+                            window.window.set_visible(!visible);
+                            if !visible {
+                                window.window.focus_window();
+                            }
+                            window.window.request_redraw();
+                            crate::control::record_window_visible(!visible);
+                        }
+                        NativeWindowControl::Quit => event_loop.exit(),
+                        NativeWindowControl::SetSize { width, height } => {
+                            let _ = window
+                                .window
+                                .request_inner_size(LogicalSize::new(width, height));
+                            window.window.request_redraw();
+                        }
+                        NativeWindowControl::SetPosition { x, y } => {
+                            window
+                                .window
+                                .set_outer_position(LogicalPosition::new(x, y));
+                        }
+                        NativeWindowControl::RequestClose => {
+                            if crate::control::close_to_tray() {
+                                window.window.set_visible(false);
+                                crate::control::record_window_visible(false);
+                            } else {
+                                event_loop.exit();
+                            }
+                        }
+                    }
+                } else if control == NativeWindowControl::Quit {
+                    event_loop.exit();
+                }
+            }
         }
         self.schedule_control_flow(event_loop);
     }
@@ -577,22 +649,32 @@ impl ApplicationHandler<LinuxDirectUserEvent> for LinuxDirectApp {
         window.process_accessibility_event(&event);
         match event {
             WindowEvent::CloseRequested => {
-                let report = window.runtime.dispatch_window_close_requested();
-                let allow = !report.handled || report.quit_requested;
-                window.apply_report(report, event_loop);
-                remove_window = allow;
+                if crate::control::close_to_tray() {
+                    window.window.set_visible(false);
+                    crate::control::record_window_visible(false);
+                } else {
+                    let report = window.runtime.dispatch_window_close_requested();
+                    let allow = !report.handled || report.quit_requested;
+                    window.apply_report(report, event_loop);
+                    remove_window = allow;
+                }
             }
             WindowEvent::Resized(size) => {
                 window.resize(size);
                 window.window.request_redraw();
+                record_window_rect(window);
                 if self.proof_resize_requested && self.proof_resize_window == Some(window_id) {
                     self.proof_resize_event_count = self.proof_resize_event_count.saturating_add(1);
                 }
+            }
+            WindowEvent::Moved(_) => {
+                record_window_rect(window);
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 window.scale_factor = scale_factor.max(0.1);
                 window.resize(window.window.inner_size());
                 window.window.request_redraw();
+                record_window_rect(window);
             }
             WindowEvent::ThemeChanged(theme) => {
                 window.theme = theme;
