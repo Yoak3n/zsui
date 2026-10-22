@@ -2756,7 +2756,8 @@ impl MacosAppKitDrawSink {
         let Some(graphics) = NSGraphicsContext::currentContext() else {
             return;
         };
-        let context: *mut c_void = unsafe { msg_send![&*graphics, CGContext] };
+        let cg_context = graphics.CGContext();
+        let context = std::ptr::from_ref(&*cg_context).cast_mut().cast::<c_void>();
         if context.is_null() {
             return;
         }
@@ -2779,7 +2780,8 @@ impl MacosAppKitDrawSink {
         let Some(graphics_context) = NSGraphicsContext::currentContext() else {
             return;
         };
-        let context: *mut c_void = unsafe { msg_send![&*graphics_context, CGContext] };
+        let cg_context = graphics_context.CGContext();
+        let context = std::ptr::from_ref(&*cg_context).cast_mut().cast::<c_void>();
         if context.is_null()
             || command.bounds.width <= 0
             || command.bounds.height <= 0

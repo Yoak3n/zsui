@@ -771,7 +771,7 @@ pub fn zsui_feature_manifest() -> Vec<ZsuiCargoFeature> {
             "macos-appkit",
             Backend,
             false,
-            vec!["objc2", "objc2-app-kit", "objc2-foundation"],
+            vec!["objc2", "objc2-app-kit", "objc2-foundation", "objc2-core-graphics"],
             Vec::new(),
             "macOS AppKit backend boundary with native window, clipboard, file-dialog and typed menu services",
         ),

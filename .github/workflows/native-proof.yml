@@ -3704,7 +3704,10 @@ jobs:
             send_dialog_key Escape
           else
             send_dialog_key ctrl+l
-            xdotool type --window "$dialog" --clearmodifiers "$selected"
+            sleep 0.15
+            send_dialog_key ctrl+a
+            xdotool type --window "$dialog" --clearmodifiers --delay 1 "$selected"
+            sleep 0.15
             send_dialog_key Return
             sleep 0.5
             if xwininfo -id "$dialog" >/dev/null 2>&1; then send_dialog_key Return; fi
