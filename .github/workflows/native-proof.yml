@@ -3736,6 +3736,7 @@ jobs:
                 proof=json.loads((output/'proof.json').read_text(encoding='utf-8-sig'))
                 assert proof['resize_messages']==count and proof['sort_requests']==0, proof
                 assert proof['runtime']['screenshot_captured'], proof
+                assert proof['screenshot_nonblank'] is True, proof
                 assert (output/'window.png').stat().st_size>1024
         input_proof=json.loads((root/'long-input/proof.json').read_text(encoding='utf-8-sig'))
         assert input_proof['path'].endswith('document.txt中文🙂tail')

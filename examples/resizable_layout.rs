@@ -2,6 +2,7 @@
 
 use std::{
     env, fs,
+    io::Cursor,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -16,6 +17,43 @@ use zsui::{
 const SIDEBAR: WidgetId = WidgetId::new(901);
 const PANEL: WidgetId = WidgetId::new(902);
 const VERTICAL_PANEL: WidgetId = WidgetId::new(903);
+
+fn capture_has_visible_content(bytes: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info()?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or("PNG capture is too large")?;
+    if size > 128 * 1024 * 1024 {
+        return Err("PNG capture exceeds the proof limit".into());
+    }
+    let mut pixels = vec![0; size];
+    let info = reader.next_frame(&mut pixels)?;
+    let channels = match info.color_type {
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        _ => return Err("native capture must contain RGB pixels".into()),
+    };
+    // Alpha variation alone is not visible content: black glyphs over an
+    // unpainted transparent surface otherwise pass a byte-variation check.
+    let mut first = None;
+    let mut different = 0;
+    for pixel in pixels[..info.buffer_size()].chunks_exact(channels) {
+        if channels == 4 && pixel[3] == 0 {
+            continue;
+        }
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        if let Some(background) = first {
+            if rgb != background {
+                different += 1;
+            }
+        } else {
+            first = Some(rgb);
+        }
+    }
+    Ok(different >= 64)
+}
 const TABLE: WidgetId = WidgetId::new(904);
 
 #[derive(Clone)]
@@ -270,6 +308,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let report = builder.run_smoke(options)?;
+    assert!(
+        capture_has_visible_content(&fs::read(output.join("window.png"))?)?,
+        "native scene capture is blank or lacks visible RGB content"
+    );
     let state = state.lock().unwrap();
     assert!(report.visible_window_was_created() && report.screenshot_captured);
     if !external_input {
@@ -296,8 +338,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_vec_pretty(&serde_json::json!({
             "scene": scene, "theme": theme, "resize_messages": state.changes, "sort_requests": state.sort_requests,
             "sidebar_width": state.sidebar.0, "panel_width": state.panel.0, "panel_height": state.vertical.0,
-            "columns": state.columns, "runtime": report,
+            "columns": state.columns, "runtime": report, "screenshot_nonblank": true,
         }))?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba_png(pixels: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 16, 16);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(pixels)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn transparent_black_glyphs_are_not_accepted_as_visible_capture() {
+        let pixels: Vec<_> = (0..256).flat_map(|alpha| [0, 0, 0, alpha as u8]).collect();
+        assert!(!capture_has_visible_content(&rgba_png(&pixels)).unwrap());
+    }
+
+    #[test]
+    fn opaque_surface_and_foreground_are_visible_capture() {
+        let pixels: Vec<_> = (0..256)
+            .flat_map(|index| {
+                let color = if index < 128 { 255 } else { 0 };
+                [color, color, color, 255]
+            })
+            .collect();
+        assert!(capture_has_visible_content(&rgba_png(&pixels)).unwrap());
+    }
 }

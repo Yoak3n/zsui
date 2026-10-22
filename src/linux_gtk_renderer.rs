@@ -112,6 +112,10 @@ pub(crate) fn install_linux_gtk_draw_plan(
                     .flatten(),
             );
             let mut sink = LinuxGtkDrawSink::new(area, context, palette, plan.typography_scale());
+            // DrawingArea snapshots do not include the window's CSS backdrop.
+            // Paint the framework surface before transparent text/icon content.
+            sink.set_source(palette.surface);
+            let _ = context.paint();
             sink.draw_plan(&plan);
         }
     });
