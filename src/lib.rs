@@ -35,8 +35,16 @@ pub mod component_protocol;
 pub mod components;
 #[cfg(feature = "dialog")]
 pub mod content_dialog;
+pub mod control;
 pub mod control_protocol;
 pub mod core;
+
+pub use control::{
+    hide_main_window, install_control_sender, last_window_rect, last_window_visible, quit,
+    record_window_rect, record_window_visible, request as request_window_control, request_close,
+    set_close_to_tray, set_main_window_position, set_main_window_size, show_main_window,
+    toggle_main_window, NativeWindowControl,
+};
 #[cfg(feature = "date-picker")]
 pub mod date;
 #[path = "platform/desktop_runtime/mod.rs"]
