@@ -65,7 +65,16 @@ pub mod components;
 #[doc(hidden)]
 pub mod content_dialog;
 #[doc(hidden)]
+pub mod control;
+#[doc(hidden)]
 pub mod control_protocol;
+
+pub use control::{
+    hide_main_window, install_control_sender, last_window_rect, last_window_visible, quit,
+    record_window_rect, record_window_visible, request as request_window_control, request_close,
+    set_close_to_tray, set_main_window_position, set_main_window_size, show_main_window,
+    toggle_main_window, NativeWindowControl,
+};
 #[doc(hidden)]
 pub mod core;
 #[cfg(feature = "date-picker")]
