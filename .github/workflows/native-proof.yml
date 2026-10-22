@@ -26,6 +26,17 @@ on:
         description: Run icon, resize and reliable desktop input proofs
         type: boolean
         default: false
+      controls_backend:
+        description: Native controls backend
+        type: choice
+        default: all
+        options:
+          - all
+          - windows-win32
+          - macos-appkit
+          - linux-direct
+          - linux-direct-lite
+          - linux-gtk
 
 permissions:
   contents: read
@@ -3487,23 +3498,13 @@ jobs:
 
   desktop-controls-proof:
     name: Controls (${{ matrix.backend }})
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.controls_only }}
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.controls_only }}
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        include:
-        - os: windows-2025
-          backend: windows-win32
-        - os: macos-15
-          backend: macos-appkit
-        - os: ubuntu-24.04
-          backend: linux-direct
-        - os: ubuntu-24.04
-          backend: linux-direct-lite
-        - os: ubuntu-24.04
-          backend: linux-gtk
-    runs-on: ${{ matrix.os }}
+        backend: ${{ fromJSON(inputs.controls_backend == 'all' && '["windows-win32","macos-appkit","linux-direct","linux-direct-lite","linux-gtk"]' || format('["{0}"]', inputs.controls_backend)) }}
+    runs-on: ${{ matrix.backend == 'windows-win32' && 'windows-2025' || matrix.backend == 'macos-appkit' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 35
     env:
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -3638,19 +3639,25 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
+        run_probe() {
+          python3 - "$@" <<'PY'
+        import subprocess,sys
+        subprocess.run(sys.argv[1:],check=True,timeout=30)
+        PY
+        }
         root="$PWD/$PROOF_ROOT"; mkdir -p "$root"
         for scene in navigation panels table icons; do
           for theme in light dark high-contrast; do
             out="$root/$scene-$theme"; mkdir -p "$out"
-            ./target/debug/examples/resizable_layout --scene "$scene" --theme "$theme" --smoke --duration-ms 3000 --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
+            run_probe ./target/debug/examples/resizable_layout --scene "$scene" --theme "$theme" --smoke --duration-ms 3000 --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
           done
         done
-        ./target/debug/examples/desktop_reliability --smoke --duration-ms 3500 --output "$root/long-input" > "$root/long-input.log" 2>&1 || { cat "$root/long-input.log"; exit 1; }
+        run_probe ./target/debug/examples/desktop_reliability --smoke --duration-ms 3500 --output "$root/long-input" > "$root/long-input.log" 2>&1 || { cat "$root/long-input.log"; exit 1; }
         selected="$root/selected-folder"; mkdir -p "$selected"
         for action in cancel select; do
           out="$root/directory-$action"; mkdir -p "$out"
           ZSUI_NATIVE_DIRECTORY_PROOF_ACTION="$action" ZSUI_NATIVE_DIRECTORY_PROOF_SCREENSHOT="$out/picker.png" \
-            ./target/debug/examples/desktop_reliability --scene directory --smoke --duration-ms 6500 --initial-directory "$selected" --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
+            run_probe ./target/debug/examples/desktop_reliability --scene directory --smoke --duration-ms 6500 --initial-directory "$selected" --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
          done
     - name: Run Linux control and directory proofs
       if: runner.os == 'Linux'

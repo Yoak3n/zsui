@@ -568,6 +568,8 @@ define_class!(
                     .then(appkit_semantic_high_contrast_palette)
                     .flatten(),
             );
+            appkit_color(palette.surface).set();
+            NSBezierPath::bezierPathWithRect(bounds).fill();
             let mut sink = MacosAppKitDrawSink::new(palette, plan.typography_scale());
             sink.draw_plan(&plan);
         }

@@ -766,13 +766,7 @@ pub fn macos_appkit_pick_directory_dialog(
     let response = appkit_run_file_panel(&panel, owner.as_deref(), AppKitFilePanelKind::Open)?;
     #[cfg(feature = "native-smoke")]
     if let Some(proof) = proof {
-        proof
-            .borrow_mut()
-            .take()
-            .ok_or_else(|| {
-                ZsuiError::host("macos_directory_proof", "native panel action did not run")
-            })?
-            .map_err(|error| ZsuiError::host("macos_directory_proof", error))?;
+        proof.finish()?;
     }
     if response != NSModalResponseOK {
         return Ok(None);
@@ -814,9 +808,36 @@ pub fn macos_appkit_save_file_dialog(spec: &SaveFileDialogSpec) -> ZsuiResult<Op
 }
 
 #[cfg(feature = "native-smoke")]
+struct AppKitDirectoryProof {
+    result: Rc<RefCell<Option<Result<(), String>>>>,
+    action_timer: Retained<NSTimer>,
+    timeout_timer: Retained<NSTimer>,
+}
+
+#[cfg(feature = "native-smoke")]
+impl AppKitDirectoryProof {
+    fn finish(self) -> ZsuiResult<()> {
+        let result = self.result.borrow_mut().take();
+        result
+            .ok_or_else(|| {
+                ZsuiError::host("macos_directory_proof", "native panel action did not run")
+            })?
+            .map_err(|error| ZsuiError::host("macos_directory_proof", error))
+    }
+}
+
+#[cfg(feature = "native-smoke")]
+impl Drop for AppKitDirectoryProof {
+    fn drop(&mut self) {
+        self.action_timer.invalidate();
+        self.timeout_timer.invalidate();
+    }
+}
+
+#[cfg(feature = "native-smoke")]
 fn appkit_schedule_directory_proof(
     panel: &NSOpenPanel,
-) -> ZsuiResult<Option<Rc<RefCell<Option<Result<(), String>>>>>> {
+) -> ZsuiResult<Option<AppKitDirectoryProof>> {
     let Some(action) = std::env::var_os("ZSUI_NATIVE_DIRECTORY_PROOF_ACTION") else {
         return Ok(None);
     };
@@ -835,26 +856,62 @@ fn appkit_schedule_directory_proof(
         .ok_or_else(|| {
             ZsuiError::invalid_spec("directory_proof_screenshot", "a capture path is required")
         })?;
-    let captured = Rc::new(RefCell::new(None));
-    let completed = Rc::clone(&captured);
-    let panel = panel.retain();
+    let result = Rc::new(RefCell::new(None));
+    let completed = Rc::clone(&result);
+    let action_panel = panel.retain();
     let action = RcBlock::new(move |_timer: NonNull<NSTimer>| {
-        *completed.borrow_mut() = Some(appkit_capture_file_panel_png(&panel, &screenshot));
-        // Exercise the real panel action and its sheet completion callback.
-        unsafe {
-            if select {
-                panel.ok(None);
-            } else {
-                panel.cancel(None);
+        let capture = appkit_capture_file_panel_compositor_png(&action_panel, &screenshot);
+        let captured = capture.is_ok();
+        *completed.borrow_mut() = Some(capture);
+        if !captured {
+            return;
+        }
+        if select {
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "AppKit directory proof: visible={}, app_running={}, choices={}",
+                action_panel.isVisible(),
+                NSApplication::sharedApplication(action_panel.mtm()).isRunning(),
+                action_panel.URLs().len()
+            );
+            let key = NSString::from_str("\r");
+            if let Some(event) = objc2_app_kit::NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                objc2_app_kit::NSEventType::KeyDown, NSPoint::new(0.0, 0.0), objc2_app_kit::NSEventModifierFlags::empty(), 0.0,
+                action_panel.windowNumber(), None, &key, &key, false, 36,
+            ) {
+                if !action_panel.performKeyEquivalent(&event) { action_panel.sendEvent(&event); }
+            }
+        } else {
+            unsafe {
+                action_panel.cancel(None);
             }
         }
     });
-    let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(0.75, false, &action) };
+    let action_timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(1.0, true, &action) };
+    let timed_result = Rc::clone(&result);
+    let timeout_panel = panel.retain();
+    let timeout = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        *timed_result.borrow_mut() = Some(Err(
+            "native directory panel did not complete its proof action within 8 seconds".to_owned(),
+        ));
+        unsafe {
+            timeout_panel.cancel(None);
+        }
+    });
+    let timeout_timer =
+        unsafe { NSTimer::timerWithTimeInterval_repeats_block(8.0, false, &timeout) };
     unsafe {
-        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSDefaultRunLoopMode);
-        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSModalPanelRunLoopMode);
+        for timer in [&action_timer, &timeout_timer] {
+            NSRunLoop::mainRunLoop().addTimer_forMode(timer, NSDefaultRunLoopMode);
+            NSRunLoop::mainRunLoop().addTimer_forMode(timer, NSModalPanelRunLoopMode);
+        }
     }
-    Ok(Some(captured))
+    Ok(Some(AppKitDirectoryProof {
+        result,
+        action_timer,
+        timeout_timer,
+    }))
 }
 
 fn appkit_configure_open_panel(panel: &NSOpenPanel, spec: &FileDialogSpec) {
