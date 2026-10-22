@@ -61,10 +61,8 @@ FIFO batching, admission at capacity, deadline expiry, provider failure,
 cancellation, duplicate results and window destruction. Native visual and service
 proof remains platform-specific; a cross-target check does not certify interaction.
 
-[Win32, Linux Direct, Direct Lite and GTK target proof](https://github.com/qiu7824/zsui/actions/runs/39739754950)
-at `303076c883f23079c33581b395987c49d37c3c72` and
-[AppKit target proof](https://github.com/qiu7824/zsui/actions/runs/39748828996)
-at `027c7fbd8841ebf43db58f1c77b665e05ca23c7e` verify directory selection and
+[Win32, AppKit, Linux Direct, Direct Lite and GTK target proof](https://github.com/qiu7824/zsui/actions/runs/39750838016)
+at `45f2c6b0d34bcff2d362119a5a26fb4666a11ac5` verifies directory selection and
 cancellation through the application update loop. The selected path must match
 the requested directory exactly. AppKit proof sends Return/Escape through
 WindowServer to the native remote panel and captures its composited bounds;

@@ -109,11 +109,11 @@ NavigationView、SplitView 的横纵面板及 DataGrid 列宽通过同一套 DP 
 
 | 后端 | 验证提交 | 原生交互证据 |
 | --- | --- | --- |
-| Windows Win32、Linux Direct、Linux Direct Lite、GTK | `303076c883f23079c33581b395987c49d37c3c72` | [四后端通过的运行](https://github.com/qiu7824/zsui/actions/runs/39739754950)，其中 AppKit 任务未通过，由下一行独立证据覆盖 |
-| macOS AppKit | `027c7fbd8841ebf43db58f1c77b665e05ca23c7e` | [AppKit 通过的运行](https://github.com/qiu7824/zsui/actions/runs/39748828996) |
+| Windows Win32、macOS AppKit、Linux Direct、Linux Direct Lite、GTK | `45f2c6b0d34bcff2d362119a5a26fb4666a11ac5` | [五后端通过的运行](https://github.com/qiu7824/zsui/actions/runs/39750838016)，60 个场景截图和 10 次目录往返 |
 
 Windows 另有六个 UIA Splitter 的数值调整证据。AppKit 目录确认/取消通过系统事件队列
 操作真实面板，截图包含远程面板控件。Linux GTK 在 Ubuntu runner 原生构建和运行。
+AppKit 和 GTK 均绘制明确的框架背景；图标与拖拽场景拒绝空白 RGB 截图。
 原 A 保留 Linux Direct 提供器失败/取消区分及实际多显示器 DPI、人工输入体验的出口；
 固定场景通过不等同于整个桌面基础完善阶段或所有环境均已验收。
 

@@ -69,9 +69,8 @@ routes actual host pointer input and verifies the resulting application state.
 
 Native proof covers the navigation pane, horizontal/trailing and vertical
 panels, and all three table columns in light, dark and high-contrast themes.
-[Win32 and the three Linux backends](https://github.com/qiu7824/zsui/actions/runs/39739754950)
-pass on `303076c883f23079c33581b395987c49d37c3c72`;
-[AppKit](https://github.com/qiu7824/zsui/actions/runs/39748828996) passes on
-`027c7fbd8841ebf43db58f1c77b665e05ca23c7e`. Each scene checks the retained
+[All five backends](https://github.com/qiu7824/zsui/actions/runs/39750838016)
+pass on `45f2c6b0d34bcff2d362119a5a26fb4666a11ac5`. Each scene checks the retained
 application extents and rejects accidental table sorting during a resize.
-Win32 additionally verifies native UIA numeric actions on all six dividers.
+Every captured scene must contain visible RGB content. Win32 additionally
+verifies native UIA numeric actions on all six dividers.
