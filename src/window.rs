@@ -11,6 +11,8 @@ pub struct WindowSpec {
     pub height: u32,
     pub min_width: Option<u32>,
     pub min_height: Option<u32>,
+    /// Optional initial outer position. Wayland compositors may ignore it.
+    pub position: Option<(i32, i32)>,
     pub visible: bool,
     pub resizable: bool,
     pub decorations: bool,
@@ -48,6 +50,7 @@ impl WindowSpec {
             height: 620,
             min_width: None,
             min_height: None,
+            position: None,
             visible: true,
             resizable: true,
             decorations: true,
@@ -68,6 +71,11 @@ impl WindowSpec {
     pub fn min_size(mut self, width: u32, height: u32) -> Self {
         self.min_width = Some(width);
         self.min_height = Some(height);
+        self
+    }
+
+    pub fn position(mut self, x: i32, y: i32) -> Self {
+        self.position = Some((x, y));
         self
     }
 
