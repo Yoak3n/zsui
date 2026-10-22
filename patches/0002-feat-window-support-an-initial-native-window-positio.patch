@@ -1,0 +1,72 @@
+From c3601d79f0c270e1570d07368028f24ec303a5d5 Mon Sep 17 00:00:00 2001
+From: Yoa <yoa@local>
+Date: Thu, 22 Oct 2026 18:34:21 +0800
+Subject: [PATCH 2/4] feat(window): support an initial native window position
+
+---
+ src/native.rs | 11 +++++++++++
+ src/window.rs |  8 ++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/src/native.rs b/src/native.rs
+index 52e19b0..3d5baa3 100644
+--- a/src/native.rs
++++ b/src/native.rs
+@@ -8919,6 +8919,12 @@ impl NativeWindowBuilder {
+         self
+     }
+ 
++    /// Requests an initial outer position. Wayland compositors may ignore it.
++    pub fn position(mut self, x: i32, y: i32) -> Self {
++        self.window = self.window.position(x, y);
++        self
++    }
++
+     pub fn visible(mut self, visible: bool) -> Self {
+         self.window = self.window.visible(visible);
+         self
+@@ -9298,6 +9304,11 @@ impl<ContentState> TypedNativeWindowBuilder<ContentState> {
+         self
+     }
+ 
++    pub fn position(mut self, x: i32, y: i32) -> Self {
++        self.inner = self.inner.position(x, y);
++        self
++    }
++
+     pub fn visible(mut self, visible: bool) -> Self {
+         self.inner = self.inner.visible(visible);
+         self
+diff --git a/src/window.rs b/src/window.rs
+index 0e044c7..893bcaf 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -11,6 +11,8 @@ pub struct WindowSpec {
+     pub height: u32,
+     pub min_width: Option<u32>,
+     pub min_height: Option<u32>,
++    /// Optional initial outer position. Wayland compositors may ignore it.
++    pub position: Option<(i32, i32)>,
+     pub visible: bool,
+     pub resizable: bool,
+     pub decorations: bool,
+@@ -48,6 +50,7 @@ impl WindowSpec {
+             height: 620,
+             min_width: None,
+             min_height: None,
++            position: None,
+             visible: true,
+             resizable: true,
+             decorations: true,
+@@ -71,6 +74,11 @@ impl WindowSpec {
+         self
+     }
+ 
++    pub fn position(mut self, x: i32, y: i32) -> Self {
++        self.position = Some((x, y));
++        self
++    }
++
+     pub fn visible(mut self, visible: bool) -> Self {
+         self.visible = visible;
+         self

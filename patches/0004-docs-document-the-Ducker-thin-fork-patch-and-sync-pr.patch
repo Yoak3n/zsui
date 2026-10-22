@@ -1,0 +1,92 @@
+From 5e9f27b7e63b280b668f29c3f52e5369fa615ef6 Mon Sep 17 00:00:00 2001
+From: Yoa <yoa@local>
+Date: Thu, 22 Oct 2026 18:34:34 +0800
+Subject: [PATCH 4/4] docs: document the Ducker thin-fork patch and sync
+ process
+
+---
+ DUCKER_FORK.md | 41 +++++++++++++++++++++++++++++++++++++++++
+ PATCHES.md     | 26 ++++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+)
+ create mode 100644 DUCKER_FORK.md
+ create mode 100644 PATCHES.md
+
+diff --git a/DUCKER_FORK.md b/DUCKER_FORK.md
+new file mode 100644
+index 0000000..d1a32e0
+--- /dev/null
++++ b/DUCKER_FORK.md
+@@ -0,0 +1,41 @@
++# Ducker thin fork
++
++This repository is an independent thin fork of
++[`qiu7824/zsui`](https://github.com/qiu7824/zsui), based on the crates.io
++`zsui 0.2.0-preview.7` source.
++
++It exists because the upstream `native_window(...).stateful_view(...)` host does
++not expose native window visibility, position, size or close-to-tray control.
++Ducker needs those operations for its tray, silent-launch, close-to-tray and
++window-state features.
++
++## Branches and tags
++
++- base: `v0.2.0-preview.7` (imported source commit)
++- patch branch: `ducker/native-window-control`
++- release tag: `v0.2.0-preview.7-ducker.1`
++
++## Patch scope
++
++See [PATCHES.md](PATCHES.md). The patch is intentionally limited to:
++
++- `src/control.rs` — public control API and state (new file);
++- `src/lib.rs` — exports;
++- `src/window.rs` / `src/native.rs` — initial position;
++- `src/linux_direct.rs` — apply control requests, record visible/rect state,
++  close-to-tray behavior.
++
++The rest of the crate is upstream source.
++
++## Upstream sync
++
++1. Fetch the upstream release tag.
++2. Rebase `ducker/native-window-control` onto it.
++3. Run `cargo test` (at minimum `control::tests`) and `cargo check` for the
++   supported target platforms.
++4. Tag a new `vX.Y.Z-ducker.N` and update Ducker's dependency ref.
++
++## License
++
++MPL-2.0, inherited from upstream. `LICENSE` and `THIRD_PARTY_NOTICES.md` are
++kept in this repository.
+diff --git a/PATCHES.md b/PATCHES.md
+new file mode 100644
+index 0000000..76a4709
+--- /dev/null
++++ b/PATCHES.md
+@@ -0,0 +1,26 @@
++# ZSUI local patch
++
++Source: crates.io `zsui 0.2.0-preview.7` (MPL-2.0).
++
++This vendored copy exists only because Ducker needs window visibility/close
++control and window-rect reporting from the native host. The patch is intentionally
++small and confined to the following files:
++
++- `src/control.rs` (new): `NativeWindowControl` enum and helpers such as
++  `show_main_window`, `hide_main_window`, `toggle_main_window`, `quit`,
++  `set_main_window_size`, `set_main_window_position`, `request_close`,
++  `set_close_to_tray`, `last_window_rect`, `last_window_visible`.
++- `src/lib.rs`: export `control` and its helpers.
++- `src/window.rs`: add `WindowSpec::position` and the `position` field.
++- `src/native.rs`: add `NativeWindowBuilder::position` and the typed-builder
++  forwarding method.
++- `src/linux_direct.rs`:
++  - create the event loop with `NativeWindowControl` user events;
++  - install an event-loop sender from `control`;
++  - apply show/hide/toggle/quit/resize/position/request-close requests;
++  - record the window rect on creation, resize and move;
++  - honor `close_to_tray()` for the native close button;
++  - record visibility for `last_window_visible()`.
++
++Everything else is upstream `0.2.0-preview.7`. If upstream publishes equivalent
++APIs, this directory can be replaced by a crates.io dependency again.
