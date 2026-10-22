@@ -28,9 +28,7 @@ use objc2_app_kit::{
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRepPropertyKey, NSModalPanelRunLoopMode};
 #[cfg(feature = "native-smoke")]
 #[allow(deprecated)]
-use objc2_core_graphics::{
-    CGRectNull, CGWindowImageOption, CGWindowListCreateImage, CGWindowListOption,
-};
+use objc2_core_graphics::{CGWindowImageOption, CGWindowListCreateImage, CGWindowListOption};
 use objc2_foundation::{
     NSArray, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint,
     NSRect, NSRunLoop, NSSize, NSString, NSURL,
@@ -866,27 +864,19 @@ fn appkit_schedule_directory_proof(
         if !captured {
             return;
         }
-        #[allow(deprecated)]
-        if let Some(image) = CGWindowListCreateImage(
-            unsafe { CGRectNull },
-            CGWindowListOption::OptionOnScreenOnly,
-            0,
-            CGWindowImageOption::BestResolution,
-        ) {
-            let bitmap = objc2_app_kit::NSBitmapImageRep::initWithCGImage(
-                objc2_app_kit::NSBitmapImageRep::alloc(),
-                &image,
-            );
-            let _ =
-                appkit_write_bitmap_png(&bitmap, &screenshot.with_file_name("picker-desktop.png"));
-        }
-        if select {
-            unsafe {
-                action_panel.ok(None);
-            }
-        } else {
-            unsafe {
-                action_panel.cancel(None);
+        // The modern panel's controls live in a remote view service. Deliver
+        // native input through WindowServer rather than the local proxy view.
+        action_panel.makeKeyAndOrderFront(None);
+        for down in [true, false] {
+            if let Some(event) = objc2_core_graphics::CGEvent::new_keyboard_event(
+                None,
+                if select { 36 } else { 53 },
+                down,
+            ) {
+                objc2_core_graphics::CGEvent::post(
+                    objc2_core_graphics::CGEventTapLocation::HIDEventTap,
+                    Some(&event),
+                );
             }
         }
     });
@@ -1082,11 +1072,23 @@ fn appkit_capture_file_panel_compositor_png(
     if window_number <= 0 {
         return Err("the AppKit file panel has no compositor window number".to_string());
     }
+    let primary = objc2_app_kit::NSScreen::screens(panel.mtm())
+        .firstObject()
+        .ok_or_else(|| "the AppKit file panel has no screen".to_owned())?;
+    let frame = panel.frame();
+    let primary_frame = primary.frame();
+    let capture_bounds = NSRect::new(
+        NSPoint::new(
+            frame.origin.x,
+            primary_frame.origin.y + primary_frame.size.height - frame.origin.y - frame.size.height,
+        ),
+        frame.size,
+    );
     #[allow(deprecated)]
     let image = CGWindowListCreateImage(
-        unsafe { CGRectNull },
-        CGWindowListOption::OptionIncludingWindow,
-        window_number as u32,
+        capture_bounds,
+        CGWindowListOption::OptionOnScreenOnly,
+        0,
         CGWindowImageOption::BoundsIgnoreFraming | CGWindowImageOption::BestResolution,
     )
     .ok_or_else(|| "Core Graphics could not capture the AppKit file-panel window".to_string())?;
