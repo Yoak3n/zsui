@@ -490,6 +490,13 @@ impl FileDialogService for LinuxGtkFileDialogService {
         linux_gtk_open_file_dialog(spec)
     }
 
+    fn pick_directory_dialog(
+        &mut self,
+        spec: &crate::DirectoryDialogSpec,
+    ) -> ZsuiResult<Option<PathBuf>> {
+        linux_gtk_pick_directory_dialog(spec)
+    }
+
     fn save_file_dialog(&mut self, spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
         linux_gtk_save_file_dialog(spec)
     }
@@ -524,6 +531,47 @@ pub fn linux_gtk_open_file_dialog(spec: &FileDialogSpec) -> ZsuiResult<Option<Ve
     let response = MainContext::default().block_on(dialog.run_future());
     let result = if response == ResponseType::Accept {
         gtk_selected_local_paths(&dialog).map(Some)
+    } else {
+        Ok(None)
+    };
+    dialog.destroy();
+    result
+}
+
+#[allow(deprecated)]
+pub fn linux_gtk_pick_directory_dialog(
+    spec: &crate::DirectoryDialogSpec,
+) -> ZsuiResult<Option<PathBuf>> {
+    spec.validate()?;
+    ensure_gtk_main_thread("gtk_pick_directory_dialog")?;
+    let dialog = FileChooserNative::builder()
+        .title(&spec.title)
+        .action(FileChooserAction::SelectFolder)
+        .modal(true)
+        .select_multiple(false)
+        .build();
+    gtk_bind_file_dialog_to_active_window(&dialog);
+    if let Some(directory) = native_file_dialog_initial_directory(spec.current_path.as_deref()) {
+        if let Err(error) = dialog.set_current_folder(Some(&gio::File::for_path(directory))) {
+            dialog.destroy();
+            return Err(ZsuiError::host(
+                "gtk_pick_directory_dialog",
+                error.to_string(),
+            ));
+        }
+    }
+    let response = MainContext::default().block_on(dialog.run_future());
+    let result = if response == ResponseType::Accept {
+        dialog
+            .file()
+            .and_then(|file| file.path())
+            .map(|path| Some(path))
+            .ok_or_else(|| {
+                ZsuiError::host(
+                    "gtk_pick_directory_dialog",
+                    "GTK accepted without a local directory",
+                )
+            })
     } else {
         Ok(None)
     };

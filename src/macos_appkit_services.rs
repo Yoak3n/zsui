@@ -85,7 +85,15 @@ define_class!(
         }
 
         #[unsafe(method(windowWillClose:))]
-        fn window_will_close(&self, _notification: &NSNotification) {
+        fn window_will_close(&self, notification: &NSNotification) {
+            let window = notification
+                .object()
+                .map(|object| Retained::as_ptr(&object).cast::<NSWindow>() as usize);
+            if let Some(handler) =
+                window.and_then(|window| self.ivars().close_handlers.get(&window))
+            {
+                handler.shutdown_dispatch();
+            }
             let remaining = self.ivars().open_windows.get().saturating_sub(1);
             self.ivars().open_windows.set(remaining);
             if remaining == 0 && !self.ivars().keep_running_without_windows {
@@ -670,6 +678,13 @@ impl FileDialogService for MacosAppKitFileDialogService {
         macos_appkit_open_file_dialog(spec)
     }
 
+    fn pick_directory_dialog(
+        &mut self,
+        spec: &crate::DirectoryDialogSpec,
+    ) -> ZsuiResult<Option<PathBuf>> {
+        macos_appkit_pick_directory_dialog(spec)
+    }
+
     fn save_file_dialog(&mut self, spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
         macos_appkit_save_file_dialog(spec)
     }
@@ -733,6 +748,47 @@ pub fn macos_appkit_open_file_dialog(spec: &FileDialogSpec) -> ZsuiResult<Option
     Ok(Some(paths))
 }
 
+pub fn macos_appkit_pick_directory_dialog(
+    spec: &crate::DirectoryDialogSpec,
+) -> ZsuiResult<Option<PathBuf>> {
+    spec.validate()?;
+    let mtm = appkit_main_thread_marker("NSOpenPanel")?;
+    let owner = appkit_active_file_dialog_owner(mtm);
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(false);
+    panel.setCanChooseDirectories(true);
+    panel.setAllowsMultipleSelection(false);
+    panel.setCanCreateDirectories(true);
+    panel.setTitle(Some(&NSString::from_str(&spec.title)));
+    appkit_set_initial_directory(&panel, spec.current_path.as_deref());
+    #[cfg(feature = "native-smoke")]
+    let proof = appkit_schedule_directory_proof(&panel)?;
+    let response = appkit_run_file_panel(&panel, owner.as_deref(), AppKitFilePanelKind::Open)?;
+    #[cfg(feature = "native-smoke")]
+    if let Some(proof) = proof {
+        proof
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| {
+                ZsuiError::host("macos_directory_proof", "native panel action did not run")
+            })?
+            .map_err(|error| ZsuiError::host("macos_directory_proof", error))?;
+    }
+    if response != NSModalResponseOK {
+        return Ok(None);
+    }
+    let path = panel
+        .URL()
+        .and_then(|url| url.to_file_path())
+        .ok_or_else(|| {
+            ZsuiError::host(
+                "macos_pick_directory_dialog",
+                "NSOpenPanel accepted without a local directory",
+            )
+        })?;
+    Ok(Some(path))
+}
+
 pub fn macos_appkit_save_file_dialog(spec: &SaveFileDialogSpec) -> ZsuiResult<Option<PathBuf>> {
     let mtm = appkit_main_thread_marker("NSSavePanel")?;
     let owner = appkit_active_file_dialog_owner(mtm);
@@ -755,6 +811,50 @@ pub fn macos_appkit_save_file_dialog(spec: &SaveFileDialogSpec) -> ZsuiResult<Op
             })
         })
         .transpose()
+}
+
+#[cfg(feature = "native-smoke")]
+fn appkit_schedule_directory_proof(
+    panel: &NSOpenPanel,
+) -> ZsuiResult<Option<Rc<RefCell<Option<Result<(), String>>>>>> {
+    let Some(action) = std::env::var_os("ZSUI_NATIVE_DIRECTORY_PROOF_ACTION") else {
+        return Ok(None);
+    };
+    let select = match action.to_str() {
+        Some("select") => true,
+        Some("cancel") => false,
+        _ => {
+            return Err(ZsuiError::invalid_spec(
+                "directory_proof_action",
+                "expected select or cancel",
+            ))
+        }
+    };
+    let screenshot = std::env::var_os("ZSUI_NATIVE_DIRECTORY_PROOF_SCREENSHOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            ZsuiError::invalid_spec("directory_proof_screenshot", "a capture path is required")
+        })?;
+    let captured = Rc::new(RefCell::new(None));
+    let completed = Rc::clone(&captured);
+    let panel = panel.retain();
+    let action = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        *completed.borrow_mut() = Some(appkit_capture_file_panel_png(&panel, &screenshot));
+        // Exercise the real panel action and its sheet completion callback.
+        unsafe {
+            if select {
+                panel.ok(None);
+            } else {
+                panel.cancel(None);
+            }
+        }
+    });
+    let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(0.75, false, &action) };
+    unsafe {
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSDefaultRunLoopMode);
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSModalPanelRunLoopMode);
+    }
+    Ok(Some(captured))
 }
 
 fn appkit_configure_open_panel(panel: &NSOpenPanel, spec: &FileDialogSpec) {

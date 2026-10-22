@@ -145,6 +145,13 @@ impl DesktopRuntimeBackend for Backend {
         crate::linux_gtk_services::linux_gtk_save_file_dialog(spec)
     }
 
+    fn pick_directory(
+        &mut self,
+        spec: &crate::DirectoryDialogSpec,
+    ) -> ZsuiResult<Option<std::path::PathBuf>> {
+        crate::linux_gtk_services::linux_gtk_pick_directory_dialog(spec)
+    }
+
     fn show_native_dialog(&mut self, spec: &NativeDialogSpec) -> ZsuiResult<DialogResponse> {
         crate::linux_gtk_services::linux_gtk_show_native_dialog(spec)
     }
