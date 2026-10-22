@@ -105,6 +105,7 @@ $singleFeatures = @(
 )
 
 $featureSets = @(
+    "windows-win32,split-view,shell,table,icon,textbox,native-smoke,accessibility",
     "button,accordion,breadcrumb,canvas,flyout,menu-flyout,context-menu,label,grid",
     "textbox,password-box,tooltip,dialog,toast,info-bar,teaching-tip,checkbox,toggle,toggle-button,slider,number-box,radio,progress,progress-ring,auto-suggest,command-palette,combo,date-picker,time-picker,color-picker,tabs",
     "list,grid-view,tree,table",

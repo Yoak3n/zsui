@@ -3520,7 +3520,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install --yes libcairo2-dev libdbus-1-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpango1.0-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev xvfb xauth xdotool x11-utils dbus-x11 xdg-desktop-portal xdg-desktop-portal-gtk zenity imagemagick adwaita-icon-theme librsvg2-common fonts-noto-cjk fonts-noto-color-emoji
+        sudo apt-get install --yes libcairo2-dev libdbus-1-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpango1.0-dev libx11-dev libxkbcommon-dev libxkbcommon-x11-dev xvfb xauth xdotool x11-utils dbus-x11 xdg-desktop-portal xdg-desktop-portal-gtk zenity imagemagick adwaita-icon-theme librsvg2-common at-spi2-core fonts-noto-cjk fonts-noto-color-emoji
         fc-cache --force
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -3528,6 +3528,7 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
         shared-key: desktop-controls-${{ matrix.backend }}
+        cache-on-failure: true
     - name: Build control and reliability proofs
       shell: bash
       run: |
@@ -3641,15 +3642,15 @@ jobs:
         for scene in navigation panels table icons; do
           for theme in light dark high-contrast; do
             out="$root/$scene-$theme"; mkdir -p "$out"
-            ./target/debug/examples/resizable_layout --scene "$scene" --theme "$theme" --smoke --duration-ms 3000 --output "$out" > "$out/run.log" 2>&1
+            ./target/debug/examples/resizable_layout --scene "$scene" --theme "$theme" --smoke --duration-ms 3000 --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
           done
         done
-        ./target/debug/examples/desktop_reliability --smoke --duration-ms 3500 --output "$root/long-input" > "$root/long-input.log" 2>&1
+        ./target/debug/examples/desktop_reliability --smoke --duration-ms 3500 --output "$root/long-input" > "$root/long-input.log" 2>&1 || { cat "$root/long-input.log"; exit 1; }
         selected="$root/selected-folder"; mkdir -p "$selected"
         for action in cancel select; do
           out="$root/directory-$action"; mkdir -p "$out"
           ZSUI_NATIVE_DIRECTORY_PROOF_ACTION="$action" ZSUI_NATIVE_DIRECTORY_PROOF_SCREENSHOT="$out/picker.png" \
-            ./target/debug/examples/desktop_reliability --scene directory --smoke --duration-ms 6500 --initial-directory "$selected" --output "$out" > "$out/run.log" 2>&1
+            ./target/debug/examples/desktop_reliability --scene directory --smoke --duration-ms 6500 --initial-directory "$selected" --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
          done
     - name: Run Linux control and directory proofs
       if: runner.os == 'Linux'
@@ -3676,11 +3677,15 @@ jobs:
         for scene in navigation panels table icons; do
           for theme in light dark high-contrast; do
             out="$root/$scene-$theme"; mkdir -p "$out"
-            ./target/debug/examples/resizable_layout --scene "$scene" --theme "$theme" --smoke --duration-ms 3000 --output "$out" > "$out/run.log" 2>&1
+            ./target/debug/examples/resizable_layout --scene "$scene" --theme "$theme" --smoke --duration-ms 3000 --output "$out" > "$out/run.log" 2>&1 || { cat "$out/run.log"; exit 1; }
           done
         done
-        ./target/debug/examples/desktop_reliability --smoke --duration-ms 3500 --output "$root/long-input" > "$root/long-input.log" 2>&1
+        ./target/debug/examples/desktop_reliability --smoke --duration-ms 3500 --output "$root/long-input" > "$root/long-input.log" 2>&1 || { cat "$root/long-input.log"; exit 1; }
         selected="$root/selected-folder"; mkdir -p "$selected"
+        send_dialog_key() {
+          if xdotool key --window "$dialog" "$@"; then return 0; fi
+          ! xwininfo -id "$dialog" >/dev/null 2>&1
+        }
         for action in cancel select; do
           out="$root/directory-$action"; mkdir -p "$out"
           ./target/debug/examples/desktop_reliability --scene directory --smoke --duration-ms 9000 --initial-directory "$selected" --output "$out" > "$out/run.log" 2>&1 &
@@ -3696,13 +3701,13 @@ jobs:
           sleep 0.3
           import -window "$dialog" "$out/picker.png"
           if test "$action" = cancel; then
-            xdotool key --window "$dialog" Escape
+            send_dialog_key Escape
           else
-            xdotool key --window "$dialog" ctrl+l
+            send_dialog_key ctrl+l
             xdotool type --window "$dialog" --clearmodifiers "$selected"
-            xdotool key --window "$dialog" Return
+            send_dialog_key Return
             sleep 0.5
-            xdotool key --window "$dialog" Return
+            if xwininfo -id "$dialog" >/dev/null 2>&1; then send_dialog_key Return; fi
           fi
           if ! timeout 20s tail --pid="$proof_pid" -f /dev/null; then kill "$proof_pid" 2>/dev/null || true; exit 1; fi
           wait "$proof_pid"

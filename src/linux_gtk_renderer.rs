@@ -593,6 +593,18 @@ impl std::fmt::Debug for LinuxGtkDrawViewHost {
 }
 
 impl LinuxGtkDrawViewHost {
+    pub(crate) fn surface_size(&self) -> crate::Size {
+        crate::Size {
+            width: self.area.width(),
+            height: self.area.height(),
+        }
+    }
+
+    pub(crate) fn observe_size_changes(&self, observe: impl Fn(crate::Size) + 'static) {
+        self.area
+            .connect_resize(move |_, width, height| observe(crate::Size { width, height }));
+    }
+
     pub(crate) fn accessibility_node_count(&self) -> usize {
         #[cfg(all(feature = "accessibility", feature = "text-input-core"))]
         {
